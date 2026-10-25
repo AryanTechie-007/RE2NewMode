@@ -11,9 +11,20 @@ local fsm = require("duo_mode/fsm")
 
 local test_harness = {}
 
+local function log_msg(str)
+    if log and log.info then
+        log.info(str)
+    end
+    local f = io.open("reframework/data/duo_mode/test_log.txt", "a")
+    if f then
+        f:write(os.date("[%Y-%m-%d %H:%M:%S] ") .. tostring(str) .. "\n")
+        f:close()
+    end
+end
+
 local function report(test_name, passed, detail)
     local status = passed and "[PASS]" or "[FAIL]"
-    re.msg(string.format("[DuoHarness] %-25s %s : %s", test_name, status, detail or ""))
+    log_msg(string.format("[DuoHarness] %-25s %s : %s", test_name, status, detail or ""))
 end
 
 local function make_vec3(x, y, z)
@@ -85,19 +96,21 @@ function test_harness.test_save_slot_indexing()
     return passed
 end
 
--- Run entire automated regression test suite
+-- Run entire automated regression test suite with pcall protection
 function test_harness.run_all()
-    re.msg("====================================================")
-    re.msg("     RUNNING DUO MODE AUTOMATED TEST HARNESS        ")
-    re.msg("====================================================")
-    local p1 = test_harness.test_synthetic_stick_math()
-    local p2 = test_harness.test_portal_room_mismatch()
-    local p3 = test_harness.test_fsm_downed_transition()
-    local p4 = test_harness.test_save_slot_indexing()
-    local all_passed = p1 and p2 and p3 and p4
-    re.msg("====================================================")
-    re.msg("TEST SUMMARY: " .. (all_passed and "ALL TESTS PASSED" or "SOME TESTS FAILED"))
-    re.msg("====================================================")
+    log_msg("====================================================")
+    log_msg("     RUNNING DUO MODE AUTOMATED TEST HARNESS        ")
+    log_msg("====================================================")
+
+    local p1, r1 = pcall(test_harness.test_synthetic_stick_math)
+    local p2, r2 = pcall(test_harness.test_portal_room_mismatch)
+    local p3, r3 = pcall(test_harness.test_fsm_downed_transition)
+    local p4, r4 = pcall(test_harness.test_save_slot_indexing)
+
+    local all_passed = (p1 and r1) and (p2 and r2) and (p3 and r3) and (p4 and r4)
+    log_msg("====================================================")
+    log_msg("TEST SUMMARY: " .. (all_passed and "ALL TESTS PASSED" or "SOME TESTS FAILED"))
+    log_msg("====================================================")
     return all_passed
 end
 

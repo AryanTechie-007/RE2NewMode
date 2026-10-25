@@ -4,6 +4,19 @@
     Author: AryanTechie-007
 ]]
 
+local function log_msg(str)
+    if log and log.info then
+        log.info(str)
+    end
+    local f = io.open("reframework/data/duo_mode/test_log.txt", "a")
+    if f then
+        f:write(os.date("[%Y-%m-%d %H:%M:%S] ") .. tostring(str) .. "\n")
+        f:close()
+    end
+end
+
+log_msg("[DuoMode] Loading modules...")
+
 local config = require("duo_mode/config")
 local spawner = require("duo_mode/spawner")
 local locomotion = require("duo_mode/locomotion")
@@ -12,11 +25,11 @@ local fsm = require("duo_mode/fsm")
 local command_wheel = require("duo_mode/command_wheel")
 local test_harness = require("duo_mode/test_harness")
 
-re.msg("[DuoMode] Initializing Resident Evil 2 Duo Mode v0.1.0-alpha...")
+log_msg("[DuoMode] Initializing Resident Evil 2 Duo Mode v0.1.0-alpha...")
 
 -- Run Day 1 regression test suite on startup
 local test_results = test_harness.run_all()
-re.msg("[DuoMode] Boot Regression Suite: " .. (test_results and "ALL PASSED" or "SOME FAILED"))
+log_msg("[DuoMode] Boot Regression Suite: " .. (test_results and "ALL PASSED" or "SOME FAILED"))
 
 local companion_hp = config.companion_max_hp
 
@@ -35,7 +48,6 @@ re.on_frame(function()
     if spawner.is_spawned and spawner.companion_game_object then
         local status = fsm.update(0.016, companion_hp)
         if status == "GAME_OVER" then
-            -- Trigger native game over
             local game_over_man = sdk.get_managed_singleton("app.ropeway.GameOverManager")
             if game_over_man then
                 game_over_man:call("startGameOver")
@@ -48,10 +60,8 @@ end)
 re.on_draw_ui(function()
     if not config.enabled then return end
 
-    -- Render tactical command wheel if active
     command_wheel.draw()
 
-    -- REFramework Developer Menu under Script Generated UI
     if imgui.tree_node("RE2: Duo Mode") then
         config.enabled = imgui.checkbox("Mod Enabled", config.enabled)
         config.debug_mode = imgui.checkbox("Debug Mode", config.debug_mode)
@@ -81,4 +91,4 @@ re.on_draw_ui(function()
     end
 end)
 
-re.msg("[DuoMode] Duo Mode initialized successfully.")
+log_msg("[DuoMode] Duo Mode hooks registered successfully.")
