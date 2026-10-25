@@ -154,7 +154,7 @@ re.on_draw_ui(function()
     imgui.text("Companion 3D Entity: " .. (spawner.companion_game_object and "ACTIVE (IN 3D WORLD)" or "NOT SPAWNED"))
     imgui.text("Spawn Status: " .. tostring(spawner.last_spawn_status))
 
-    if imgui.button("Force Spawn Claire Next to Leon") then
+    if imgui.button("Assemble Claire 3D Body (Option 1)") then
         spawner.force_spawn()
     end
     imgui.same_line()
