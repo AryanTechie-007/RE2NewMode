@@ -99,49 +99,49 @@ re.on_frame(function()
             -- Hold position; zero velocity
         end
     end
+
+    -- Render in-game floating HUD overlays (Command Wheel, Inventory, Downed HUD)
+    pcall(command_wheel.draw)
+    pcall(inventory_manager.draw_ui)
+    pcall(health_manager.draw_ui)
 end)
 
--- Master UI rendering loop
+-- REFramework Menu rendering loop (inside Script Generated UI)
 re.on_draw_ui(function()
-    if not config.enabled then return end
+    imgui.text_colored("=== RESIDENT EVIL 2: DUO MODE ===", 0.2, 0.9, 1.0, 1.0)
 
-    -- Day 4: Draw Tactical Command Wheel
-    pcall(command_wheel.draw)
-
-    -- Day 6: Draw Docked Dual-Bag Inventory
-    pcall(inventory_manager.draw_ui)
-
-    -- Day 8: Draw Downed / Revive HUD
-    pcall(health_manager.draw_ui)
-
-    -- REFramework Developer Menu under Script Generated UI
-    if imgui.tree_node("RE2: Duo Mode") then
-        config.enabled = imgui.checkbox("Mod Enabled", config.enabled)
-        config.debug_mode = imgui.checkbox("Debug Mode", config.debug_mode)
-        
-        imgui.separator()
-        imgui.text("Companion State: " .. fsm.get_state_name())
-        imgui.text(string.format("Companion HP: %d / %d", health_manager.current_hp, health_manager.max_hp))
-        
-        if imgui.button("Damage Companion (-250 HP)") then
-            health_manager.apply_damage(250, false)
-        end
-        imgui.same_line()
-        if imgui.button("Test Anti-Grab Hit") then
-            health_manager.apply_damage(100, true)
-        end
-
-        imgui.separator()
-        if imgui.button("Open Tactical Wheel") then
-            command_wheel.open()
-        end
-        imgui.same_line()
-        if imgui.button("Run Automated Test Suite") then
-            test_harness.run_all()
-        end
-
-        imgui.tree_pop()
+    local changed, new_val = imgui.checkbox("Mod Enabled", config.enabled)
+    if changed then
+        config.enabled = new_val
     end
+
+    imgui.same_line()
+    local dbg_changed, new_dbg = imgui.checkbox("Debug Mode", config.debug_mode)
+    if dbg_changed then
+        config.debug_mode = new_dbg
+    end
+
+    imgui.separator()
+    imgui.text("Companion State: " .. fsm.get_state_name())
+    imgui.text(string.format("Companion HP: %d / %d", health_manager.current_hp, health_manager.max_hp))
+
+    if imgui.button("Damage Companion (-250 HP)") then
+        health_manager.apply_damage(250, false)
+    end
+    imgui.same_line()
+    if imgui.button("Test Anti-Grab Hit") then
+        health_manager.apply_damage(100, true)
+    end
+
+    imgui.separator()
+    if imgui.button("Open Tactical Wheel") then
+        command_wheel.open()
+    end
+    imgui.same_line()
+    if imgui.button("Run Automated Test Suite") then
+        test_harness.run_all()
+    end
+    imgui.separator()
 end)
 
 log_msg("[DuoMode] Days 1–8 hooks registered successfully.")
