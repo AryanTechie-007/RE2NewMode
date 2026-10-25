@@ -96,13 +96,13 @@ re.on_draw_ui(function()
     if not config.enabled then return end
 
     -- Day 4: Draw Tactical Command Wheel
-    command_wheel.draw()
+    pcall(command_wheel.draw)
 
     -- Day 6: Draw Docked Dual-Bag Inventory
-    inventory_manager.draw_ui()
+    pcall(inventory_manager.draw_ui)
 
     -- Day 8: Draw Downed / Revive HUD
-    health_manager.draw_ui()
+    pcall(health_manager.draw_ui)
 
     -- REFramework Developer Menu under Script Generated UI
     if imgui.tree_node("RE2: Duo Mode") then

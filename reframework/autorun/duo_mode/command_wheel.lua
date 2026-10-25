@@ -20,8 +20,8 @@ local options = {
 function command_wheel.draw()
     if not command_wheel.is_open then return end
 
-    local viewport = imgui.get_main_viewport()
-    local center = Vector2f.new(viewport.Size.x * 0.5, viewport.Size.y * 0.5)
+    local display_size = (imgui and imgui.get_display_size and imgui.get_display_size()) or Vector2f.new(1920, 1080)
+    local center = Vector2f.new(display_size.x * 0.5, display_size.y * 0.5)
 
     imgui.set_next_window_pos(center, 1, Vector2f.new(0.5, 0.5))
     imgui.set_next_window_size(Vector2f.new(340, 290), 1)

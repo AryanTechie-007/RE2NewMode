@@ -99,8 +99,8 @@ end
 function health_manager.draw_ui()
     if not health_manager.is_downed then return end
 
-    local viewport = imgui.get_main_viewport()
-    local win_pos = Vector2f.new(viewport.Size.x * 0.5, viewport.Size.y * 0.75)
+    local display_size = (imgui and imgui.get_display_size and imgui.get_display_size()) or Vector2f.new(1920, 1080)
+    local win_pos = Vector2f.new(display_size.x * 0.5, display_size.y * 0.75)
     imgui.set_next_window_pos(win_pos, 1, Vector2f.new(0.5, 0.5))
     imgui.set_next_window_size(Vector2f.new(380, 140), 1)
 

@@ -92,8 +92,8 @@ function inventory_manager.draw_ui()
     -- Also show if debug mode is active
     if not is_inv_open and not config.debug_mode then return end
 
-    local viewport = imgui.get_main_viewport()
-    local win_pos = Vector2f.new(viewport.Size.x - 360, 120)
+    local display_size = (imgui and imgui.get_display_size and imgui.get_display_size()) or Vector2f.new(1920, 1080)
+    local win_pos = Vector2f.new(display_size.x - 360, 120)
     imgui.set_next_window_pos(win_pos, 1, Vector2f.new(0, 0))
     imgui.set_next_window_size(Vector2f.new(340, 420), 1)
 
