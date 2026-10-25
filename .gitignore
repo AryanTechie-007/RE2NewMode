@@ -1,0 +1,20 @@
+# REFramework runtime generated files
+*.log
+reframework/data/duo_mode/save_state_*.json
+reframework/data/duo_mode/test_reports/
+
+# Build artifacts
+build/
+bin/
+*.obj
+*.lib
+*.exp
+*.dll.pdb
+
+# OS and IDE files
+.vscode/
+.vs/
+*.user
+Thumbs.db
+Desktop.ini
+.DS_Store
