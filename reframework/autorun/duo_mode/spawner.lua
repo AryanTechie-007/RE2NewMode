@@ -1,6 +1,7 @@
 --[[
     Resident Evil 2: Duo Mode
-    spawner.lua - Handles asset preloading, companion spawning, and controller stripping
+    spawner.lua - Day 1: Physical 3D Model Instantiation & Input Stripping
+    Author: AryanTechie-007
 ]]
 
 local config = require("duo_mode/config")
@@ -9,6 +10,7 @@ local spawner = {}
 spawner.companion_game_object = nil
 spawner.is_spawned = false
 spawner.preloaded = false
+spawner.spawn_in_progress = false
 
 local function log_msg(msg)
     if config.log_verbose then
@@ -35,7 +37,10 @@ function spawner.preload_assets()
     end
 
     for key, path in pairs(config.preload_prefabs) do
-        log_msg("Queuing prefab: " .. key .. " -> " .. path)
+        pcall(function()
+            log_msg("Preloading prefab resource: " .. key .. " -> " .. path)
+            res_man:call("loadResource", "prefab", path)
+        end)
     end
 
     spawner.preloaded = true
@@ -77,16 +82,35 @@ function spawner.strip_input_components(companion_obj)
     return true
 end
 
--- Spawn companion entity next to the active leader
+-- Determine which companion prefab to spawn based on active leader character
+function spawner.get_target_companion_prefab(master_player)
+    local target_path = config.preload_prefabs.claire_body -- Default: Claire
+
+    pcall(function()
+        local game_obj_name = master_player:call("get_Name") or ""
+        -- If player is pl1000 (Claire), spawn pl0000 (Leon)
+        if string.find(string.lower(game_obj_name), "claire") or string.find(string.lower(game_obj_name), "pl1000") then
+            target_path = config.preload_prefabs.leon_body
+            log_msg("Active leader identified as Claire. Target companion: Leon (pl0000).")
+        else
+            log_msg("Active leader identified as Leon. Target companion: Claire (pl1000).")
+        end
+    end)
+
+    return target_path
+end
+
+-- Spawn companion 3D entity next to the active leader
 function spawner.spawn_companion()
     if spawner.is_spawned and spawner.companion_game_object then
         return spawner.companion_game_object
     end
 
-    if not spawner.is_scene_ready() then
+    if spawner.spawn_in_progress or not spawner.is_scene_ready() then
         return nil
     end
 
+    spawner.spawn_in_progress = true
     spawner.preload_assets()
 
     local player_man = sdk.get_managed_singleton("app.ropeway.survivor.PlayerManager")
@@ -94,17 +118,67 @@ function spawner.spawn_companion()
     local leader_transform = master_player:call("get_Transform")
     local leader_pos = leader_transform:call("get_Position")
 
-    log_msg(string.format("Spawning companion near leader at (%.2f, %.2f, %.2f)", leader_pos.x, leader_pos.y, leader_pos.z))
+    -- Calculate spawn offset (1.5m to the right and 1.5m behind)
+    local spawn_x = leader_pos.x + 1.5
+    local spawn_y = leader_pos.y
+    local spawn_z = leader_pos.z - 1.5
+    local spawn_pos = Vector3f and Vector3f.new(spawn_x, spawn_y, spawn_z) or { x = spawn_x, y = spawn_y, z = spawn_z }
 
-    spawner.is_spawned = true
-    log_msg("Companion spawned successfully.")
-    return spawner.companion_game_object
+    local target_prefab_path = spawner.get_target_companion_prefab(master_player)
+    log_msg(string.format("Instantiating 3D prefab '%s' at (%.2f, %.2f, %.2f)...", target_prefab_path, spawn_x, spawn_y, spawn_z))
+
+    local spawned_obj = nil
+
+    -- Primary RE Engine Instantiation: via.Prefab:instantiate
+    local ok_inst, err_inst = pcall(function()
+        local prefab = sdk.create_instance("via.Prefab"):add_ref()
+        if prefab then
+            prefab:set_field("Path", target_prefab_path)
+            spawned_obj = prefab:call("instantiate(via.vec3)", spawn_pos)
+        end
+    end)
+
+    -- Fallback Instantiation: via.SceneManager:instantiate
+    if not spawned_obj then
+        pcall(function()
+            local scene_man = sdk.get_native_singleton("via.SceneManager")
+            if scene_man then
+                local current_scene = scene_man:call("get_CurrentScene")
+                if current_scene then
+                    local prefab = sdk.create_instance("via.Prefab"):add_ref()
+                    prefab:set_field("Path", target_prefab_path)
+                    spawned_obj = current_scene:call("instantiate(via.Prefab, via.vec3)", prefab, spawn_pos)
+                end
+            end
+        end)
+    end
+
+    if spawned_obj then
+        spawner.companion_game_object = spawned_obj
+        spawner.is_spawned = true
+        spawner.spawn_in_progress = false
+
+        -- Strip input controllers so companion doesn't mirror player controller
+        spawner.strip_input_components(spawned_obj)
+
+        log_msg("SUCCESS: Companion 3D model physically spawned in scene!")
+        return spawned_obj
+    else
+        spawner.spawn_in_progress = false
+        log_msg("Instantiate attempt queued; awaiting next active scene frame.")
+        return nil
+    end
 end
 
 -- Despawn companion cleanly (for cutscenes or unload)
 function spawner.despawn_companion()
     if not spawner.is_spawned then return end
     log_msg("Despawning companion entity...")
+    if spawner.companion_game_object then
+        pcall(function()
+            spawner.companion_game_object:call("destroy")
+        end)
+    end
     spawner.is_spawned = false
     spawner.companion_game_object = nil
 end

@@ -140,20 +140,43 @@ function locomotion.update_locomotion(companion_obj, leader_obj, delta_time, is_
     local damped_sx, damped_sy = locomotion.apply_acoustic_damping(raw_sx, raw_sy, is_stealth_zone)
 
     -- 4. Apply input acceleration smoothing to prevent jerky start/stop animations
-    local smooth_speed = 8.0 * delta_time
+    local smooth_speed = clamp(8.0 * delta_time, 0.0, 1.0)
     locomotion.current_stick_x = lerp(locomotion.current_stick_x, damped_sx, smooth_speed)
     locomotion.current_stick_y = lerp(locomotion.current_stick_y, damped_sy, smooth_speed)
     locomotion.current_magnitude = math.sqrt(locomotion.current_stick_x * locomotion.current_stick_x + locomotion.current_stick_y * locomotion.current_stick_y)
 
-    -- 5. Smooth rotation alignment toward motion vector
+    -- 5. Physical Rotation Alignment toward movement vector
     if locomotion.current_magnitude > 0.05 then
         local target_turn = comp_yaw + local_angle
-        local new_yaw = lerp(comp_yaw, target_turn, 6.0 * delta_time)
+        local new_yaw = lerp(comp_yaw, target_turn, clamp(8.0 * delta_time, 0.0, 1.0))
         pcall(function()
-            local new_rot = Quaternion.new(0, 0, 0, 1)
-            -- Apply smoothed yaw rotation to transform if character controller allows
+            local half_yaw = new_yaw * 0.5
+            local qy = math.sin(half_yaw)
+            local qw = math.cos(half_yaw)
+            local new_rot = Quaternion and Quaternion.new(0, qy, 0, qw) or { x = 0, y = qy, z = 0, w = qw }
+            comp_transform:call("set_Rotation", new_rot)
         end)
     end
+
+    -- 6. Physical Translation via CharacterController
+    pcall(function()
+        local char_ctrl = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.physics.CharacterController"))
+        if char_ctrl then
+            local speed = locomotion.current_magnitude * 3.8 -- Native jog speed in m/s
+            local vx = math.sin(comp_yaw) * speed * delta_time
+            local vz = math.cos(comp_yaw) * speed * delta_time
+            local move_delta = Vector3f and Vector3f.new(vx, 0, vz) or { x = vx, y = 0, z = vz }
+            char_ctrl:call("move", move_delta)
+        end
+    end)
+
+    -- 7. Root-Motion Animation Blending via MotionFsm2
+    pcall(function()
+        local motion_fsm = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.motion.MotionFsm2"))
+        if motion_fsm then
+            motion_fsm:call("setVariable(System.String, System.Single)", "MoveSpeed", locomotion.current_magnitude)
+        end
+    end)
 
     return locomotion.current_stick_x, locomotion.current_stick_y, dist
 end
