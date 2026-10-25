@@ -62,16 +62,15 @@ re.on_frame(function()
     end
 
     -- Active companion processing
+    local master_player = spawner.get_master_player()
     if spawner.is_spawned and spawner.companion_game_object then
-        local player_man = sdk.get_managed_singleton("app.ropeway.survivor.PlayerManager")
-        local master_player = player_man and player_man:call("getMasterPlayerCharacter")
-
         -- Update FSM and bleed-out timer
         local status = fsm.update(0.016, health_manager.current_hp)
         if status == "GAME_OVER" then
-            local game_over_man = sdk.get_managed_singleton("app.ropeway.GameOverManager")
-            if game_over_man then
-                game_over_man:call("startGameOver")
+            local game_over_flow = sdk.get_managed_singleton("app.ropeway.gamemastering.GameOverFlow")
+                                or sdk.get_managed_singleton("app.ropeway.GameOverManager")
+            if game_over_flow and game_over_flow.call then
+                pcall(function() game_over_flow:call("startGameOver") end)
             end
         end
 
@@ -140,6 +139,27 @@ re.on_draw_ui(function()
     imgui.same_line()
     if imgui.button("Run Automated Test Suite") then
         test_harness.run_all()
+    end
+
+    imgui.separator()
+    imgui.text_colored("--- Companion Spawner Diagnostics ---", 0.9, 0.9, 0.2, 1.0)
+    local master_p = spawner.get_master_player()
+    imgui.text("Master Player (Leon): " .. (master_p and "CONNECTED" or "WAITING FOR IN-GAME SCENE"))
+    
+    local pos = master_p and spawner.get_player_position(master_p)
+    if pos then
+        imgui.text(string.format("Player Coordinates: (%.2f, %.2f, %.2f)", pos.x, pos.y, pos.z))
+    end
+
+    imgui.text("Companion 3D Entity: " .. (spawner.companion_game_object and "ACTIVE (IN 3D WORLD)" or "NOT SPAWNED"))
+    imgui.text("Spawn Status: " .. tostring(spawner.last_spawn_status))
+
+    if imgui.button("Force Spawn Claire Next to Leon") then
+        spawner.force_spawn()
+    end
+    imgui.same_line()
+    if imgui.button("Despawn Claire") then
+        spawner.despawn_companion()
     end
     imgui.separator()
 end)

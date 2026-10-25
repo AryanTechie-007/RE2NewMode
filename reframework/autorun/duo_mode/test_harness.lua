@@ -147,6 +147,11 @@ function test_harness.test_anti_grab_and_revive()
     local revived = health_manager.revive("GreenHerb")
     local check_revived = (revived and not health_manager.is_downed and health_manager.current_hp > 0)
 
+    -- Restore full HP and normal FOLLOW state so companion starts healthy
+    health_manager.current_hp = config.companion_max_hp
+    health_manager.is_downed = false
+    fsm.set_state(fsm.STATES.FOLLOW)
+
     local passed = check_grab and check_downed and check_revived
     report("AntiGrabAndRevive", passed, "Verified grab neutralization, downed FSM, and Green Herb revive")
     return passed
