@@ -16,10 +16,17 @@ local function report(test_name, passed, detail)
     re.msg(string.format("[DuoHarness] %-25s %s : %s", test_name, status, detail or ""))
 end
 
+local function make_vec3(x, y, z)
+    if Vector3f and Vector3f.new then
+        return Vector3f.new(x, y, z)
+    end
+    return { x = x, y = y, z = z }
+end
+
 -- Test 1: Verify synthetic stick math does not spin during camera rotations
 function test_harness.test_synthetic_stick_math()
-    local comp_pos = Vector3f.new(0, 0, 0)
-    local target_pos = Vector3f.new(0, 0, 5) -- Directly forward in world Z
+    local comp_pos = make_vec3(0, 0, 0)
+    local target_pos = make_vec3(0, 0, 5) -- Directly forward in world Z
     local comp_yaw = 0.0 -- Facing forward
 
     local sx, sy, dist = locomotion.calculate_synthetic_stick(comp_pos, comp_yaw, target_pos)

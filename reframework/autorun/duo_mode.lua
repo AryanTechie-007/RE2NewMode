@@ -14,6 +14,10 @@ local test_harness = require("duo_mode/test_harness")
 
 re.msg("[DuoMode] Initializing Resident Evil 2 Duo Mode v0.1.0-alpha...")
 
+-- Run Day 1 regression test suite on startup
+local test_results = test_harness.run_all()
+re.msg("[DuoMode] Boot Regression Suite: " .. (test_results and "ALL PASSED" or "SOME FAILED"))
+
 local companion_hp = config.companion_max_hp
 
 -- Frame update loop
