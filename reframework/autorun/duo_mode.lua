@@ -52,6 +52,14 @@ re.on_frame(function()
             if game_over_man then
                 game_over_man:call("startGameOver")
             end
+        elseif fsm.current_state == fsm.STATES.FOLLOW then
+            local player_man = sdk.get_managed_singleton("app.ropeway.survivor.PlayerManager")
+            if player_man then
+                local master_player = player_man:call("getMasterPlayerCharacter")
+                if master_player then
+                    locomotion.update_locomotion(spawner.companion_game_object, master_player, 0.016, false)
+                end
+            end
         end
     end
 end)

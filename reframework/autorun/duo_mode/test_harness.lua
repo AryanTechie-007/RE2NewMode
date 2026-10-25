@@ -1,6 +1,7 @@
 --[[
     Resident Evil 2: Duo Mode
     test_harness.lua - Automated QA regression test suite
+    Updated for Day 2: Locomotion, Acoustic Damping & Anchor Math
 ]]
 
 local config = require("duo_mode/config")
@@ -24,7 +25,7 @@ end
 
 local function report(test_name, passed, detail)
     local status = passed and "[PASS]" or "[FAIL]"
-    log_msg(string.format("[DuoHarness] %-25s %s : %s", test_name, status, detail or ""))
+    log_msg(string.format("[DuoHarness] %-28s %s : %s", test_name, status, detail or ""))
 end
 
 local function make_vec3(x, y, z)
@@ -43,7 +44,7 @@ function test_harness.test_synthetic_stick_math()
     local sx, sy, dist = locomotion.calculate_synthetic_stick(comp_pos, comp_yaw, target_pos)
     local check1 = (math.abs(sx) < 0.01 and sy > 0.4)
 
-    -- Now rotate companion 90 degrees to the right (pi/2 radians)
+    -- Rotate companion 90 degrees right (pi/2 radians)
     local comp_yaw_rotated = math.pi * 0.5
     local sx2, sy2, _ = locomotion.calculate_synthetic_stick(comp_pos, comp_yaw_rotated, target_pos)
     -- Target is now to companion's left (-X in local space)
@@ -54,7 +55,53 @@ function test_harness.test_synthetic_stick_math()
     return passed
 end
 
--- Test 2: Verify portal room mismatch detection logic
+-- Test 2: Verify distance-based magnitude scaling (Idle -> Walk -> Sprint)
+function test_harness.test_distance_magnitude_scaling()
+    local comp_pos = make_vec3(0, 0, 0)
+
+    -- Case A: Within idle deadzone (< 1.2m)
+    local idle_target = make_vec3(0, 0, 0.8)
+    local sx_i, sy_i, dist_i = locomotion.calculate_synthetic_stick(comp_pos, 0.0, idle_target)
+    local check_idle = (sx_i == 0.0 and sy_i == 0.0 and dist_i < 1.2)
+
+    -- Case B: Walk range (2.5m)
+    local walk_target = make_vec3(0, 0, 2.5)
+    local sx_w, sy_w, dist_w = locomotion.calculate_synthetic_stick(comp_pos, 0.0, walk_target)
+    local mag_w = math.sqrt(sx_w * sx_w + sy_w * sy_w)
+    local check_walk = (mag_w >= 0.35 and mag_w <= 0.65)
+
+    -- Case C: Sprint range (8.0m)
+    local sprint_target = make_vec3(0, 0, 8.0)
+    local sx_s, sy_s, dist_s = locomotion.calculate_synthetic_stick(comp_pos, 0.0, sprint_target)
+    local mag_s = math.sqrt(sx_s * sx_s + sy_s * sy_s)
+    local check_sprint = (math.abs(mag_s - 1.0) < 0.05)
+
+    local passed = check_idle and check_walk and check_sprint
+    report("DistanceMagnitudeScaling", passed, "Validated Idle (0.0), Walk (0.5), and Sprint (1.0)")
+    return passed
+end
+
+-- Test 3: Verify Licker acoustic stealth speed clamping
+function test_harness.test_licker_acoustic_damping()
+    local full_stick_x = 0.0
+    local full_stick_y = 1.0 -- Full sprint
+
+    -- Damped in stealth zone
+    local damped_x, damped_y = locomotion.apply_acoustic_damping(full_stick_x, full_stick_y, true)
+    local damped_mag = math.sqrt(damped_x * damped_x + damped_y * damped_y)
+    local check_damped = (math.abs(damped_mag - config.licker_max_stick_magnitude) < 0.01)
+
+    -- Undamped in normal zone
+    local norm_x, norm_y = locomotion.apply_acoustic_damping(full_stick_x, full_stick_y, false)
+    local norm_mag = math.sqrt(norm_x * norm_x + norm_y * norm_y)
+    local check_norm = (math.abs(norm_mag - 1.0) < 0.01)
+
+    local passed = check_damped and check_norm
+    report("LickerAcousticDamping", passed, string.format("Clamped to <= %.2f in stealth zones", config.licker_max_stick_magnitude))
+    return passed
+end
+
+-- Test 4: Verify portal room mismatch detection logic
 function test_harness.test_portal_room_mismatch()
     local leader_room = 101
     local comp_room = 102
@@ -66,7 +113,7 @@ function test_harness.test_portal_room_mismatch()
     return passed
 end
 
--- Test 3: Verify FSM state transitions and downed bleed-out timer
+-- Test 5: Verify FSM state transitions and downed bleed-out timer
 function test_harness.test_fsm_downed_transition()
     fsm.set_state(fsm.STATES.FOLLOW)
     fsm.update(0.1, 0) -- HP = 0
@@ -82,7 +129,7 @@ function test_harness.test_fsm_downed_transition()
     return passed
 end
 
--- Test 4: Verify save state slot path formatting
+-- Test 6: Verify save state slot path formatting
 function test_harness.test_save_slot_indexing()
     local function get_path(slot)
         if slot == 99 then return "save_state_scenario_transition.json" end
@@ -103,13 +150,15 @@ function test_harness.run_all()
     log_msg("====================================================")
 
     local p1, r1 = pcall(test_harness.test_synthetic_stick_math)
-    local p2, r2 = pcall(test_harness.test_portal_room_mismatch)
-    local p3, r3 = pcall(test_harness.test_fsm_downed_transition)
-    local p4, r4 = pcall(test_harness.test_save_slot_indexing)
+    local p2, r2 = pcall(test_harness.test_distance_magnitude_scaling)
+    local p3, r3 = pcall(test_harness.test_licker_acoustic_damping)
+    local p4, r4 = pcall(test_harness.test_portal_room_mismatch)
+    local p5, r5 = pcall(test_harness.test_fsm_downed_transition)
+    local p6, r6 = pcall(test_harness.test_save_slot_indexing)
 
-    local all_passed = (p1 and r1) and (p2 and r2) and (p3 and r3) and (p4 and r4)
+    local all_passed = (p1 and r1) and (p2 and r2) and (p3 and r3) and (p4 and r4) and (p5 and r5) and (p6 and r6)
     log_msg("====================================================")
-    log_msg("TEST SUMMARY: " .. (all_passed and "ALL TESTS PASSED" or "SOME TESTS FAILED"))
+    log_msg("TEST SUMMARY: " .. (all_passed and "ALL TESTS PASSED (6/6)" or "SOME TESTS FAILED"))
     log_msg("====================================================")
     return all_passed
 end
