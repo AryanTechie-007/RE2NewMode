@@ -36,6 +36,16 @@ log_msg("[DuoMode] Boot Regression Suite: " .. (test_results and "ALL PASSED" or
 
 local current_gametime = 0.0
 
+-- Reset state when loading saves or resetting scripts
+re.on_script_reset(function()
+    spawner.is_spawned = false
+    spawner.companion_game_object = nil
+    spawner.spawn_in_progress = false
+    health_manager.current_hp = config.companion_max_hp
+    health_manager.is_downed = false
+    fsm.set_state(fsm.STATES.FOLLOW)
+end)
+
 -- Master frame update loop
 re.on_frame(function()
     if not config.enabled then return end
