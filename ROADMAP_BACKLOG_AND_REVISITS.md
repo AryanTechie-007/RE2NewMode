@@ -58,3 +58,19 @@ The following technical items have been deferred during Phase 1 to prioritize co
     * `Caps Lock`
     * `Mouse 4 / Mouse 5` (Side thumb buttons)
     * `RB / R1` (Gamepad default)
+
+---
+
+### 5. Hardware Keyboard Hook / Input Interception for Tactical Wheel (Hold 'T')
+* **Observed In-Game Behavior (Day 4 Testing):**
+  - FSM order execution functions properly when commanded directly via the ImGui Controller dashboard:
+    * `[Hold Position (Stay)]` stops locomotion and anchors Claire in place.
+    * `[Follow Me]` resumes dynamic companion gliding alongside Leon.
+    * `[Take Cover]` transitions into tight 0.95m formation with rear-guard outward orientation.
+  - However, holding the keyboard hotkey `T` during live gameplay did not trigger the wheel or slow down time, and pressing `1` / `2` / `3` did not register via `reframework.is_key_down(key)`.
+* **Root Cause Analysis:**
+  - `reframework.is_key_down()` queries REFramework's internal input hook. When the REFramework UI overlay is closed and the game viewport has direct focus, DirectInput / raw Windows messages are captured directly by RE Engine's native input devices (`via.hid.Keyboard` / `app.ropeway.InputManager`), bypassing REFramework's standard message pump.
+* **Revisit Action Plan:**
+  - Query native RE Engine input device state via `sdk.get_native_singleton("via.hid.Keyboard")` or hook `via.hid.Keyboard:isDown()` directly in IL2CPP.
+  - Implement gamepad shoulder button polling (`via.hid.GamePadDevice`) for RB / R1.
+  - Maintain the working ImGui dashboard buttons as the primary reliable control surface in the interim.
