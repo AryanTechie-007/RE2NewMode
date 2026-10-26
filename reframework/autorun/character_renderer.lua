@@ -347,16 +347,13 @@ local function probe_room_system(player_go)
 
     if player_go and player_go.call then
         pcall(function()
-            local comps = player_go:call("get_Components"):get_elements()
-            if comps then
-                log_debug("  Player Components (" .. tostring(#comps) .. " total):")
-                for i, c in ipairs(comps) do
-                    local cname = "unknown"
-                    pcall(function() cname = c:get_type_definition():get_full_name() end)
-                    if string.find(string.lower(cname), "room") or string.find(string.lower(cname), "area") or string.find(string.lower(cname), "zone") or string.find(string.lower(cname), "survivor") or string.find(string.lower(cname), "condition") then
-                        log_debug("    [" .. i .. "] " .. cname)
-                    end
-                end
+            local p_fsm = player_go:call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2"))
+            if p_fsm then
+                log_debug("  Leon MotionFsm2 present.")
+            end
+            local p_mot = player_go:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+            if p_mot then
+                log_debug("  Leon via.motion.Motion present.")
             end
         end)
     end
@@ -825,6 +822,39 @@ re.on_frame(function()
                         local cname = "unknown"
                         pcall(function() cname = c:get_type_definition():get_full_name() end)
                         log_debug("  [" .. i .. "] " .. cname)
+                    end
+                end
+
+                -- Dump MotionFsm2 methods and variables
+                local mfsm = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2"))
+                if mfsm then
+                    log_debug("--- via.motion.MotionFsm2 Methods ---")
+                    local td = mfsm:get_type_definition()
+                    local methods = td:get_methods()
+                    for _, m in ipairs(methods) do
+                        local mname = m:get_name()
+                        if string.find(string.lower(mname), "var") or string.find(string.lower(mname), "state") or string.find(string.lower(mname), "play") or string.find(string.lower(mname), "speed") or string.find(string.lower(mname), "set") then
+                            log_debug("  MFSM Method: " .. mname .. " (" .. tostring(m:get_num_params()) .. " params)")
+                        end
+                    end
+
+                    -- Check if MotionFsm2 has a current state or layer
+                    local state = nil
+                    pcall(function() state = mfsm:call("getCurrentState") or mfsm:call("get_CurrentState") end)
+                    log_debug("  MFSM CurrentState: " .. tostring(state))
+                end
+
+                -- Dump via.motion.Motion
+                local motion = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+                if motion then
+                    log_debug("--- via.motion.Motion Methods ---")
+                    local td_m = motion:get_type_definition()
+                    local methods_m = td_m:get_methods()
+                    for _, m in ipairs(methods_m) do
+                        local mname = m:get_name()
+                        if string.find(string.lower(mname), "speed") or string.find(string.lower(mname), "play") or string.find(string.lower(mname), "layer") or string.find(string.lower(mname), "change") or string.find(string.lower(mname), "bank") then
+                            log_debug("  Motion Method: " .. mname .. " (" .. tostring(m:get_num_params()) .. " params)")
+                        end
                     end
                 end
             end)
