@@ -1,7 +1,10 @@
 --[[
-    Resident Evil 2: Duo Mode — Claire Redfield Spawner & Companion Locomotion
+    Resident Evil 2: Duo Mode — Claire Redfield Spawner, Locomotion & Portal Defense
     Script: character_renderer.lua
-    Purpose: Single unified script that renders Claire Redfield in 3D and provides smooth gliding companion locomotion.
+    Phase 1 Complete:
+      - Day 1: Full 3D Character Rendering (Body + Face + Hair)
+      - Day 2: NaN-Safe Companion Locomotion & Gliding Follow
+      - Day 3: Room Portal Culling Defense, Kinematic Elevator Parenting & Cutscene Protection
     Author: AryanTechie-007
 ]]
 
@@ -46,7 +49,7 @@ spawner.streaming = false
 spawner.stream_frames = 0
 spawner.mode = "full"
 
--- Locomotion Configuration & State (Single-Script Architecture)
+-- Locomotion Configuration & State (Day 2)
 spawner.follow_enabled = false
 spawner.current_speed = 0.0
 spawner.comp_yaw = 0.0
@@ -56,12 +59,22 @@ spawner.last_time = nil
 spawner.follow_distance = 1.4 -- 1.4m behind Leon
 spawner.follow_flank = -0.7    -- 0.7m to Leon's left flank (companion over-the-shoulder view)
 
+-- Day 3: Portal Defense, Elevator Parenting & Cutscene States
+spawner.current_leader_room = 0
+spawner.last_leader_room = 0
+spawner.portal_defense_active = true
+spawner.is_on_elevator = false
+spawner.elevator_transform = nil
+spawner.cutscene_active = false
+spawner.portal_teleports_count = 0
+
 -- Follow Tuning Parameters
 local STOP_DIST     = 0.35 -- Arrival tolerance at target waypoint
 local WALK_SPEED    = 2.2  -- Walking gliding speed (m/s)
 local RUN_SPEED     = 4.5  -- Catch-up speed (m/s)
 local RUN_THRESHOLD = 2.6  -- Distance from target that triggers catch-up speed
-local TELEPORT_DIST = 25.0 -- Snap if separated by cutscene or elevator
+local RUBBER_BAND_DIST = 10.0 -- Rubber-band distance catch-up
+local VERTICAL_DESYNC_DIST = 3.2 -- Vertical elevation desync catch-up (e.g. staircases/drops)
 
 local rotation_initialized = false
 local rotation_method = nil
@@ -289,7 +302,98 @@ local function rotate_transform_safely(tf, game_obj, yaw_rad)
 end
 
 -- =========================================================================
--- 3. Player Resolution
+-- 3. Day 3: Room Portal, Cutscene & Elevator Helpers
+-- =========================================================================
+
+-- Query current room ID from RoomArea component
+local function get_room_id(game_obj)
+    if not game_obj then return 0 end
+    local room_id = 0
+    pcall(function()
+        local t = sdk.typeof("app.ropeway.RoomArea")
+        if t and game_obj.call then
+            local comp = game_obj:call("getComponent(System.Type)", t)
+            if comp then
+                room_id = comp:call("get_CurrentRoomID") or 0
+            end
+        end
+    end)
+    return room_id
+end
+
+-- Query active cutscene status from CutsceneManager
+local function check_cutscenes()
+    local is_playing = false
+    pcall(function()
+        local cutscene_man = sdk.get_managed_singleton("app.ropeway.cutscene.CutsceneManager")
+        if cutscene_man then
+            is_playing = cutscene_man:call("isCutscenePlaying") or false
+        end
+    end)
+
+    if is_playing and not spawner.cutscene_active then
+        spawner.cutscene_active = true
+        log_debug("Cutscene detected: hiding Claire meshes to protect timeline.")
+        for _, ent in ipairs(spawner.spawned_entities) do
+            pcall(function() ent:call("set_DrawSelf", false) end)
+        end
+        spawner.loco_status = "In Cutscene (Hidden)"
+    elseif not is_playing and spawner.cutscene_active then
+        spawner.cutscene_active = false
+        log_debug("Cutscene ended: restoring Claire meshes and catching up.")
+        for _, ent in ipairs(spawner.spawned_entities) do
+            pcall(function() ent:call("set_DrawSelf", true) end)
+        end
+        -- Auto-catch up Claire to Leon in post-cutscene area
+        local player = spawner.get_master_player()
+        local player_go = spawner.get_player_game_object(player)
+        local player_tf = player_go and player_go:call("get_Transform")
+        local body_obj = spawner.spawned_entities and spawner.spawned_entities[1]
+        local body_tf = body_obj and body_obj:call("get_Transform")
+        if player_tf and body_tf then
+            local ppos = player_tf:call("get_Position")
+            local pyaw = get_yaw_from_transform(player_tf)
+            local target_x = ppos.x - math.sin(pyaw) * (spawner.follow_distance or 1.4)
+            local target_z = ppos.z - math.cos(pyaw) * (spawner.follow_distance or 1.4)
+            move_transform_safely(body_tf, body_obj, target_x, ppos.y, target_z)
+            rotate_transform_safely(body_tf, body_obj, pyaw)
+        end
+        spawner.loco_status = "Resumed Post-Cutscene"
+    end
+
+    return is_playing
+end
+
+-- Manage Kinematic Elevator / Platform Parenting
+local function update_elevator_parenting(player_tf, body_tf)
+    if not player_tf or not body_tf then return end
+
+    local player_parent = nil
+    pcall(function() player_parent = player_tf:call("get_Parent") end)
+
+    if player_parent and not spawner.is_on_elevator then
+        -- Leon stepped onto a moving elevator or tram! Parent Claire to the same platform
+        local ok = pcall(function()
+            body_tf:call("set_Parent", player_parent)
+        end)
+        if ok then
+            spawner.is_on_elevator = true
+            spawner.elevator_transform = player_parent
+            log_debug("Elevator entered: Claire parented to kinematic platform.")
+        end
+    elseif not player_parent and spawner.is_on_elevator then
+        -- Leon stepped off the elevator! Restore root scene parenting
+        pcall(function()
+            body_tf:call("set_Parent", nil)
+        end)
+        spawner.is_on_elevator = false
+        spawner.elevator_transform = nil
+        log_debug("Elevator exited: Claire unparented from platform.")
+    end
+end
+
+-- =========================================================================
+-- 4. Player Resolution
 -- =========================================================================
 function spawner.get_master_player()
     local player_man = nil
@@ -317,7 +421,7 @@ function spawner.get_player_game_object(player)
 end
 
 -- =========================================================================
--- 4. Despawn Logic
+-- 5. Despawn Logic
 -- =========================================================================
 function spawner.execute_despawn()
     pcall(function()
@@ -348,13 +452,16 @@ function spawner.execute_despawn()
     spawner.follow_enabled = false
     spawner.current_speed = 0.0
     spawner.dist_to_leon = 0.0
+    spawner.is_on_elevator = false
+    spawner.elevator_transform = nil
+    spawner.cutscene_active = false
     spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
     spawner.last_status = "Despawned - Standing by"
     log_debug("Despawn executed cleanly.")
 end
 
 -- =========================================================================
--- 5. Initiate Spawner Pipeline
+-- 6. Initiate Spawner Pipeline
 -- =========================================================================
 function spawner.start_spawn(mode)
     spawner.execute_despawn()
@@ -407,7 +514,7 @@ function spawner.start_spawn(mode)
 end
 
 -- =========================================================================
--- 6. Companion Locomotion Controller (Runs In-Script)
+-- 7. Companion Locomotion Controller (Runs In-Script)
 -- =========================================================================
 local function update_companion_locomotion(delta_time)
     if not spawner.follow_enabled then
@@ -418,12 +525,20 @@ local function update_companion_locomotion(delta_time)
     local body_obj = spawner.spawned_entities and spawner.spawned_entities[1]
     if not body_obj then return end
 
+    -- Day 3: Cutscene Protection
+    if check_cutscenes() then
+        return
+    end
+
     local player = spawner.get_master_player()
     local player_go = spawner.get_player_game_object(player)
     local player_tf = player_go and player_go:call("get_Transform")
     local body_tf = nil
     pcall(function() body_tf = body_obj:call("get_Transform") end)
     if not player_tf or not body_tf then return end
+
+    -- Day 3: Kinematic Elevator / Platform Parenting
+    update_elevator_parenting(player_tf, body_tf)
 
     local leon_pos = nil
     pcall(function() leon_pos = player_tf:call("get_Position") end)
@@ -466,13 +581,42 @@ local function update_companion_locomotion(delta_time)
     local dist_target = math.sqrt(dx * dx + dz * dz)
     if dist_target ~= dist_target then dist_target = 0.0 end
 
-    -- Catch-up teleport if Leon runs far ahead (e.g. cutscene / elevator)
-    if dist_leon > TELEPORT_DIST then
+    -- =========================================================================
+    -- Day 3: Room Portal Culling Defense
+    -- =========================================================================
+    local leader_room = get_room_id(player_go)
+    if leader_room ~= 0 then
+        spawner.current_leader_room = leader_room
+        if spawner.last_leader_room ~= 0 and spawner.last_leader_room ~= leader_room then
+            -- Leon transitioned into a new room!
+            -- If Claire is separated across the room boundary, instantly catch her up!
+            if dist_leon > 2.2 then
+                spawner.portal_teleports_count = spawner.portal_teleports_count + 1
+                log_debug(string.format("Portal Catch-Up triggered: Room %d -> %d (Dist: %.2fm)", spawner.last_leader_room, leader_room, dist_leon))
+                move_transform_safely(body_tf, body_obj, target_x, target_y, target_z)
+                spawner.current_speed = 0.0
+                spawner.comp_yaw = leon_yaw
+                rotate_transform_safely(body_tf, body_obj, spawner.comp_yaw)
+                spawner.loco_status = string.format("Portal Catch-Up (Room %d)", leader_room)
+                spawner.last_leader_room = leader_room
+                return
+            end
+        end
+        spawner.last_leader_room = leader_room
+    end
+
+    -- =========================================================================
+    -- Day 3: Rubber-Band & Elevation Desync Catch-up
+    -- =========================================================================
+    local dy = math.abs(leon_pos.y - comp_pos.y)
+    if (dist_leon > RUBBER_BAND_DIST or dy > VERTICAL_DESYNC_DIST) and not spawner.is_on_elevator then
+        spawner.portal_teleports_count = spawner.portal_teleports_count + 1
+        log_debug(string.format("Rubber-Band catch-up: dist=%.1fm, dy=%.1fm. Snapping behind Leon.", dist_leon, dy))
         move_transform_safely(body_tf, body_obj, target_x, target_y, target_z)
         spawner.current_speed = 0.0
         spawner.comp_yaw = leon_yaw
         rotate_transform_safely(body_tf, body_obj, spawner.comp_yaw)
-        spawner.loco_status = "Catch-up Teleported"
+        spawner.loco_status = "Elevation/Distance Catch-up"
         return
     end
 
@@ -518,7 +662,7 @@ local function update_companion_locomotion(delta_time)
 end
 
 -- =========================================================================
--- 7. Master Frame Loop (re.on_frame)
+-- 8. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
     local now = os.clock()
@@ -645,7 +789,7 @@ end)
 pcall(spawner.scan_all_candidates)
 
 -- =========================================================================
--- 8. Clean, Minimalist ImGui Spawner UI
+-- 9. Clean, Minimalist ImGui Spawner UI (Day 1 - 3 Dashboard)
 -- =========================================================================
 local function draw_spawner_ui(suffix)
     suffix = suffix or ""
@@ -656,6 +800,25 @@ local function draw_spawner_ui(suffix)
         imgui.text_colored("Claire: ACTIVE IN VIEWPORT (3D Model Rendered)", 0.2, 1.0, 0.4, 1.0)
         imgui.text("Locomotion: " .. tostring(spawner.loco_status))
         imgui.text(string.format("Distance to Leon: %.2f m | Speed: %.1f m/s", spawner.dist_to_leon, spawner.current_speed))
+
+        -- Day 3 Status Indicators
+        imgui.spacing()
+        imgui.text_colored("--- Day 3: Portal & Environment Defense ---", 1.0, 0.8, 0.2, 1.0)
+        local room_str = spawner.current_leader_room ~= 0 and string.format("Room ID: %d", spawner.current_leader_room) or "Room ID: Querying..."
+        imgui.text(room_str .. " | Portal Snaps: " .. tostring(spawner.portal_teleports_count))
+
+        if spawner.is_on_elevator then
+            imgui.text_colored("Elevator Platform: KINEMATIC LINKED [Active]", 0.2, 1.0, 0.4, 1.0)
+        else
+            imgui.text("Elevator Platform: Ground Level")
+        end
+
+        if spawner.cutscene_active then
+            imgui.text_colored("Cinematic Status: IN CUTSCENE (Actor Hidden)", 1.0, 0.4, 0.2, 1.0)
+        else
+            imgui.text("Cinematic Status: Gameplay Active")
+        end
+
         if rotation_method then
             imgui.text_colored("Rotation Engine: " .. rotation_method, 0.6, 0.8, 1.0, 1.0)
         end
