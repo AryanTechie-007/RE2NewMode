@@ -440,3 +440,22 @@ end)
 re.on_draw_ui(function()
     draw_spawner_ui("##menu")
 end)
+
+
+-- =========================================================================
+-- 8. Global OOP Interface for Companion Motion & Systems
+-- =========================================================================
+_G.DuoMode = _G.DuoMode or {}
+_G.DuoMode.spawner = spawner
+_G.DuoMode.get_companion = function()
+    return spawner.spawned_entities and spawner.spawned_entities[1]
+end
+_G.DuoMode.get_companion_body = function()
+    return spawner.spawned_entities and spawner.spawned_entities[1]
+end
+_G.DuoMode.get_companion_parts = function()
+    return spawner.spawned_entities
+end
+_G.DuoMode.is_rendered = function()
+    return spawner.spawned_entities and #spawner.spawned_entities > 0 and spawner.spawned_entities[1] ~= nil
+end
