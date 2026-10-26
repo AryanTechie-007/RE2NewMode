@@ -1,7 +1,7 @@
 --[[
     Resident Evil 2: Duo Mode — Claire Redfield Spawner
     Script: character_renderer.lua
-    Purpose: Dedicated harness to spawn Claire Redfield (PL1000) into the 3D viewport.
+    Purpose: Dedicated harness to spawn Claire Redfield (Body, Face, Hair) into the 3D viewport.
     Author: AryanTechie-007
 ]]
 
@@ -10,19 +10,18 @@ spawner.spawned_entities = {}
 spawner.last_status = "Ready - Standing by (Click button to spawn)"
 spawner.click_count = 0
 
--- Streaming State
-spawner.active_pfbs = {}
-spawner.loading_frames = 0
-spawner.current_candidate_idx = 1
-spawner.is_streaming = false
+-- Multi-Part Streaming State
+spawner.body_pfb = nil
+spawner.head_pfb = nil
+spawner.hair_pfb = nil
+spawner.streaming = false
+spawner.stream_frames = 0
+spawner.mode = "full" -- "full" or "body_only"
 
-local CANDIDATE_PATHS = {
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb",
-    "objectroot/prefab/character/survivor/pl1000.pfb",
-    "natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb",
-    "natives/x64/objectroot/prefab/character/survivor/pl1000.pfb",
-    "objectroot/prefab/character/player/pl1000.pfb"
-}
+-- Exact Verified Character Paths (from RE2 archives)
+local PATH_BODY = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb"
+local PATH_HEAD = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb"
+local PATH_HAIR = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb"
 
 local function log_debug(msg)
     pcall(function()
@@ -37,7 +36,7 @@ local function log_debug(msg)
     end
 end
 
-log_debug("=== Claire Redfield Spawner Initialized ===")
+log_debug("=== Claire Redfield Spawner Loaded ===")
 
 -- =========================================================================
 -- 1. Helper: Safe Yaw and Forward Vector Extraction
@@ -128,130 +127,64 @@ function spawner.execute_despawn()
         end
     end)
     spawner.spawned_entities = {}
-    spawner.active_pfbs = {}
-    spawner.is_streaming = false
-    spawner.loading_frames = 0
+    spawner.body_pfb = nil
+    spawner.head_pfb = nil
+    spawner.hair_pfb = nil
+    spawner.streaming = false
+    spawner.stream_frames = 0
     spawner.last_status = "Despawned - Standing by"
     log_debug("Despawn executed cleanly.")
 end
 
 -- =========================================================================
--- 4. Multi-Candidate Adaptive Prefab Spawner
+-- 4. Initiate Spawner Pipeline
 -- =========================================================================
-function spawner.start_adaptive_prefab_stream()
+function spawner.start_spawn(mode)
     spawner.execute_despawn()
-    spawner.active_pfbs = {}
-    spawner.loading_frames = 0
-    spawner.is_streaming = true
+    spawner.mode = mode or "full"
+    spawner.streaming = true
+    spawner.stream_frames = 0
 
-    log_debug("Starting Adaptive Prefab Stream across " .. tostring(#CANDIDATE_PATHS) .. " candidates:")
+    log_debug("Starting Claire Spawn Pipeline (Mode: " .. spawner.mode .. "):")
+    log_debug("  Body: " .. PATH_BODY)
+    if spawner.mode == "full" then
+        log_debug("  Head: " .. PATH_HEAD)
+        log_debug("  Hair: " .. PATH_HAIR)
+    end
 
-    for idx, path in ipairs(CANDIDATE_PATHS) do
+    -- Create Body Prefab
+    pcall(function()
+        local b = sdk.create_instance("via.Prefab"):add_ref()
+        b:call("set_Path", PATH_BODY)
+        b:call("set_Standby", true)
+        spawner.body_pfb = b
+    end)
+
+    -- Create Head and Hair Prefabs if full mode
+    if spawner.mode == "full" then
         pcall(function()
-            local pfb = sdk.create_instance("via.Prefab"):add_ref()
-            pfb:call("set_Path", path)
-            pfb:call("set_Standby", true)
-            table.insert(spawner.active_pfbs, {
-                path = path,
-                pfb = pfb,
-                idx = idx
-            })
-            log_debug(string.format("  [%d] Queued: %s", idx, path))
+            local h = sdk.create_instance("via.Prefab"):add_ref()
+            h:call("set_Path", PATH_HEAD)
+            h:call("set_Standby", true)
+            spawner.head_pfb = h
+        end)
+        pcall(function()
+            local hr = sdk.create_instance("via.Prefab"):add_ref()
+            hr:call("set_Path", PATH_HAIR)
+            hr:call("set_Standby", true)
+            spawner.hair_pfb = hr
         end)
     end
 
-    spawner.last_status = "Streaming candidate prefabs from game archives..."
+    spawner.last_status = "Streaming Claire assets into memory... (Frame 0)"
 end
 
 -- =========================================================================
--- 5. Native Casting Pathway (SurvivorAssignManager)
--- =========================================================================
-function spawner.spawn_claire_native()
-    spawner.execute_despawn()
-    log_debug("Executing Native Casting Spawner...")
-
-    local sam = nil
-    pcall(function() sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager") end)
-    local sm = nil
-    pcall(function() sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager") end)
-
-    if not sam then
-        spawner.last_status = "Error: SurvivorAssignManager not found"
-        log_debug("SurvivorAssignManager not found.")
-        return
-    end
-
-    local player = spawner.get_master_player()
-    local player_go = spawner.get_player_game_object(player)
-    local player_tf = player_go and player_go:call("get_Transform")
-    local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
-
-    pcall(function()
-        sam:call("beginRequestTransaction(app.ropeway.SurvivorAssignManager.TransactionOption)", 0)
-    end)
-
-    -- Try Actor Casting (1000 = PL1000, 1 = SurvivorType PL1000)
-    local r1 = nil
-    pcall(function()
-        r1 = sam:call("sceneIn(app.ropeway.ActorDefine.ActorType, app.ropeway.SurvivorAssignManager.CastingReason, app.ropeway.SurvivorAssignManager.OfferMode, app.ropeway.gamemastering.Map.ID, app.ropeway.gamemastering.Location.ID)", 1000, 1, 0, 0, 0)
-    end)
-    if not r1 then
-        pcall(function()
-            r1 = sam:call("sceneIn(app.ropeway.ActorDefine.ActorType, app.ropeway.SurvivorAssignManager.CastingReason, app.ropeway.SurvivorAssignManager.OfferMode, app.ropeway.gamemastering.Map.ID, app.ropeway.gamemastering.Location.ID)", 1, 1, 0, 0, 0)
-        end)
-    end
-
-    pcall(function() sam:call("endRequestTransaction") end)
-    pcall(function() sam:call("onUpdateWaitingRequest") end)
-    log_debug("Native casting transaction completed. Result: " .. tostring(r1))
-
-    -- Locate Claire in Scene
-    local claire_go = nil
-    if sm then
-        local sm_td = sm:get_type_definition()
-        if sm_td then
-            local m = sm_td:get_method("getSurvivorGameObject")
-            if m then
-                pcall(function() claire_go = m:call(nil, "pl1000", 0) end)
-                if not claire_go then pcall(function() claire_go = m:call(nil, "PL1000", 0) end) end
-            end
-        end
-    end
-
-    if not claire_go then
-        local scene_man = sdk.get_native_singleton("via.SceneManager")
-        local cur_scene = scene_man and scene_man:call("get_CurrentScene")
-        if cur_scene then
-            pcall(function() claire_go = cur_scene:call("findGameObject(System.String)", "pl1000") end)
-            if not claire_go then pcall(function() claire_go = cur_scene:call("findGameObject(System.String)", "PL1000") end) end
-        end
-    end
-
-    if claire_go then
-        pcall(function() claire_go:add_ref() end)
-        local c_tf = claire_go.call and claire_go:call("get_Transform")
-        if c_tf then
-            pcall(function() c_tf:call("set_Position", front_pos) end)
-        end
-        pcall(function()
-            claire_go:call("set_DrawSelf", true)
-            claire_go:call("set_UpdateSelf", true)
-        end)
-        table.insert(spawner.spawned_entities, claire_go)
-        spawner.last_status = "SUCCESS: CLAIRE CAST VIA ENGINE & POSITIONED!"
-        log_debug("Claire found and positioned in viewport!")
-    else
-        spawner.last_status = "Native cast dispatched. Searching scene..."
-        log_debug("Native cast dispatched, searching scene on subsequent frames...")
-    end
-end
-
--- =========================================================================
--- 6. Master Frame Loop (re.on_frame)
+-- 5. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
-    if spawner.is_streaming and #spawner.active_pfbs > 0 then
-        spawner.loading_frames = spawner.loading_frames + 1
+    if spawner.streaming and spawner.body_pfb then
+        spawner.stream_frames = spawner.stream_frames + 1
 
         local player = spawner.get_master_player()
         local player_go = spawner.get_player_game_object(player)
@@ -259,62 +192,105 @@ re.on_frame(function()
         local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
         local vpos = (Vector3f and Vector3f.new and Vector3f.new(front_pos.x, front_pos.y, front_pos.z)) or front_pos
 
-        local spawned_obj = nil
-        local winning_path = nil
+        -- Attempt instantiation of Body on every frame
+        local body_obj = nil
+        local ok_b = pcall(function()
+            body_obj = spawner.body_pfb:call("instantiate(via.vec3)", vpos)
+        end)
 
-        -- Check all candidate prefabs for readiness or instantiate opportunity
-        for _, entry in ipairs(spawner.active_pfbs) do
-            local pfb = entry.pfb
-            local is_ready = false
-            pcall(function() is_ready = pfb:call("get_Ready") end)
-
-            -- Try instantiate if ready OR periodically every 15 frames
-            if is_ready or (spawner.loading_frames % 15 == 0) then
-                local obj = nil
-                local ok = pcall(function()
-                    obj = pfb:call("instantiate(via.vec3)", vpos)
-                end)
-
-                if ok and obj then
-                    spawned_obj = obj
-                    winning_path = entry.path
-                    break
-                end
-            end
-        end
-
-        if spawned_obj then
-            pcall(function() spawned_obj:add_ref() end)
-            local sp_tf = nil
-            pcall(function() sp_tf = spawned_obj:call("get_Transform") end)
-            if sp_tf then
-                pcall(function() sp_tf:call("set_Position", front_pos) end)
+        if ok_b and body_obj then
+            pcall(function() body_obj:add_ref() end)
+            local b_tf = nil
+            pcall(function() b_tf = body_obj:call("get_Transform") end)
+            if b_tf then
+                pcall(function() b_tf:call("set_Position", front_pos) end)
             end
             pcall(function()
-                spawned_obj:call("set_DrawSelf", true)
-                spawned_obj:call("set_UpdateSelf", true)
+                body_obj:call("set_DrawSelf", true)
+                body_obj:call("set_UpdateSelf", true)
             end)
-            table.insert(spawner.spawned_entities, spawned_obj)
+            table.insert(spawner.spawned_entities, body_obj)
+            log_debug(string.format("Body instantiated at frame %d at (%.2f, %.2f, %.2f)", spawner.stream_frames, front_pos.x, front_pos.y, front_pos.z))
 
-            spawner.is_streaming = false
-            spawner.active_pfbs = {}
-            spawner.last_status = "SUCCESS: CLAIRE RENDERED IN VIEWPORT!"
-            log_debug(string.format("Spawn succeeded at frame %d using: %s", spawner.loading_frames, tostring(winning_path)))
+            -- If Full mode, instantiate and attach Head & Hair
+            if spawner.mode == "full" then
+                -- Head
+                if spawner.head_pfb then
+                    local head_obj = nil
+                    pcall(function() head_obj = spawner.head_pfb:call("instantiate(via.vec3)", vpos) end)
+                    if head_obj then
+                        pcall(function() head_obj:add_ref() end)
+                        pcall(function()
+                            local h_tf = head_obj:call("get_Transform")
+                            if h_tf and b_tf then
+                                h_tf:call("set_Parent", b_tf)
+                            end
+                            head_obj:call("set_DrawSelf", true)
+                            head_obj:call("set_UpdateSelf", true)
+                        end)
+                        table.insert(spawner.spawned_entities, head_obj)
+                        log_debug("Head instantiated and attached to Body.")
+                    else
+                        log_debug("Head instantiate returned nil at frame " .. tostring(spawner.stream_frames))
+                    end
+                end
+
+                -- Hair
+                if spawner.hair_pfb then
+                    local hair_obj = nil
+                    pcall(function() hair_obj = spawner.hair_pfb:call("instantiate(via.vec3)", vpos) end)
+                    if hair_obj then
+                        pcall(function() hair_obj:add_ref() end)
+                        pcall(function()
+                            local hr_tf = hair_obj:call("get_Transform")
+                            if hr_tf and b_tf then
+                                hr_tf:call("set_Parent", b_tf)
+                            end
+                            hair_obj:call("set_DrawSelf", true)
+                            hair_obj:call("set_UpdateSelf", true)
+                        end)
+                        table.insert(spawner.spawned_entities, hair_obj)
+                        log_debug("Hair instantiated and attached to Body.")
+                    else
+                        log_debug("Hair instantiate returned nil at frame " .. tostring(spawner.stream_frames))
+                    end
+                end
+            end
+
+            local total_parts = #spawner.spawned_entities
+            if total_parts >= 3 then
+                spawner.last_status = "SUCCESS: CLAIRE FULLY RENDERED (Body + Head + Hair)!"
+            else
+                spawner.last_status = "SUCCESS: CLAIRE RENDERED IN VIEWPORT!"
+            end
+            log_debug(string.format("Spawn completed! Total parts active: %d", total_parts))
+
+            spawner.streaming = false
+            spawner.body_pfb = nil
+            spawner.head_pfb = nil
+            spawner.hair_pfb = nil
         else
-            spawner.last_status = string.format("Streaming candidates (Frame %d/300)...", spawner.loading_frames)
+            spawner.last_status = string.format("Streaming assets... (Frame %d/300)", spawner.stream_frames)
 
-            if spawner.loading_frames > 300 then
-                spawner.is_streaming = false
-                spawner.active_pfbs = {}
-                spawner.last_status = "Streaming timed out. Try Native Cast button!"
-                log_debug("Adaptive streaming timed out at frame 300.")
+            -- Periodic log every 30 frames
+            if spawner.stream_frames % 30 == 0 then
+                log_debug(string.format("Streaming in progress: frame %d, instantiate returned nil", spawner.stream_frames))
+            end
+
+            if spawner.stream_frames > 300 then
+                spawner.streaming = false
+                spawner.body_pfb = nil
+                spawner.head_pfb = nil
+                spawner.hair_pfb = nil
+                spawner.last_status = "Streaming timed out at frame 300"
+                log_debug("Streaming timed out at frame 300.")
             end
         end
     end
 end)
 
 -- =========================================================================
--- 7. Clean, Minimalist ImGui Spawner UI
+-- 6. Clean, Minimalist ImGui Spawner UI
 -- =========================================================================
 local function draw_spawner_ui(suffix)
     suffix = suffix or ""
@@ -328,17 +304,17 @@ local function draw_spawner_ui(suffix)
         imgui.text_colored("Player (Leon): ACTIVE IN SCENE", 0.2, 1.0, 0.4, 1.0)
         imgui.spacing()
 
-        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Adaptive Prefab) <<<##btn_main" .. suffix) then
+        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Full Character) <<<##btn_full" .. suffix) then
             spawner.click_count = spawner.click_count + 1
-            log_debug("UI BUTTON CLICKED: Adaptive Prefab Spawn")
-            spawner.start_adaptive_prefab_stream()
+            log_debug("UI BUTTON CLICKED: Full Character Spawn")
+            spawner.start_spawn("full")
         end
 
         imgui.spacing()
-        if imgui.button("Spawn Claire (Native Engine Cast)##btn_nat" .. suffix) then
+        if imgui.button("Spawn Claire Body Only (Instant Test)##btn_body" .. suffix) then
             spawner.click_count = spawner.click_count + 1
-            log_debug("UI BUTTON CLICKED: Native Cast")
-            spawner.spawn_claire_native()
+            log_debug("UI BUTTON CLICKED: Body Only Spawn")
+            spawner.start_spawn("body_only")
         end
 
         imgui.same_line()
