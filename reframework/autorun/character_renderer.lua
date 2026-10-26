@@ -61,11 +61,14 @@ end
 
 local function get_front_spawn_position(player_tf, dist)
     dist = dist or 2.0 -- 2 meters directly IN FRONT of player
-    local pos = player_tf:call("get_Position")
-    local yaw = get_yaw_from_transform(player_tf)
-    local fx = pos.x + math.sin(yaw) * dist
-    local fy = pos.y
-    local fz = pos.z + math.cos(yaw) * dist
+    local fx, fy, fz = 0.0, 0.0, 0.0
+    pcall(function()
+        local pos = player_tf:call("get_Position")
+        local yaw = get_yaw_from_transform(player_tf)
+        fx = pos.x + math.sin(yaw) * dist
+        fy = pos.y
+        fz = pos.z + math.cos(yaw) * dist
+    end)
     return (Vector3f and Vector3f.new and Vector3f.new(fx, fy, fz)) or { x = fx, y = fy, z = fz }
 end
 
@@ -73,8 +76,11 @@ end
 -- 2. Player Resolution
 -- =========================================================================
 function spawner.get_master_player()
-    local player_man = sdk.get_managed_singleton("app.ropeway.PlayerManager")
-                    or sdk.get_managed_singleton(sdk.game_namespace("PlayerManager"))
+    local player_man = nil
+    pcall(function()
+        player_man = sdk.get_managed_singleton("app.ropeway.PlayerManager")
+                  or sdk.get_managed_singleton(sdk.game_namespace("PlayerManager"))
+    end)
     if not player_man then return nil end
 
     local p = nil
@@ -95,37 +101,41 @@ function spawner.get_player_game_object(player)
 end
 
 -- =========================================================================
--- 3. Despawn Logic
+-- 3. Despawn Logic (100% Protected)
 -- =========================================================================
 function spawner.execute_despawn()
-    local scene_man = sdk.get_native_singleton("via.SceneManager")
-    local cur_scene = scene_man and scene_man:call("get_CurrentScene")
+    pcall(function()
+        local scene_man = nil
+        pcall(function() scene_man = sdk.get_native_singleton("via.SceneManager") end)
+        local cur_scene = nil
+        pcall(function() cur_scene = scene_man and scene_man:call("get_CurrentScene") end)
 
-    for _, entity in ipairs(spawner.spawned_entities) do
-        pcall(function()
-            if entity and entity.call then
-                pcall(function() entity:call("set_DrawSelf", false) end)
-                pcall(function() entity:call("set_UpdateSelf", false) end)
-                if cur_scene then
-                    pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", entity) end)
-                    pcall(function() cur_scene:call("destroyGameObject", entity) end)
+        for _, entity in ipairs(spawner.spawned_entities) do
+            pcall(function()
+                if entity and entity.call then
+                    pcall(function() entity:call("set_DrawSelf", false) end)
+                    pcall(function() entity:call("set_UpdateSelf", false) end)
+                    if cur_scene then
+                        pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", entity) end)
+                        pcall(function() cur_scene:call("destroyGameObject", entity) end)
+                    end
                 end
-            end
-        end)
-    end
+            end)
+        end
+    end)
     spawner.spawned_entities = {}
     spawner.loading_prefab = nil
     spawner.loading_head_prefab = nil
     spawner.loading_hair_prefab = nil
     spawner.last_status = "Despawned - Standing by"
-    log_debug("Despawn executed.")
+    log_debug("Despawn executed cleanly.")
 end
 
 -- =========================================================================
 -- 4. Primary Spawner: Guaranteed Body Instantiation (Verified Working)
 -- =========================================================================
 function spawner.spawn_claire_body(costume_index)
-    spawner.execute_despawn()
+    pcall(spawner.execute_despawn)
     costume_index = costume_index or 0
 
     local body_path = string.format("objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_%d.pfb", costume_index)
@@ -156,7 +166,7 @@ end
 -- 5. Experimental Modular Spawner: Body + Head + Hair
 -- =========================================================================
 function spawner.spawn_claire_modular(costume_index)
-    spawner.execute_despawn()
+    pcall(spawner.execute_despawn)
     costume_index = costume_index or 0
 
     local body_path = string.format("objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_%d.pfb", costume_index)
@@ -221,7 +231,8 @@ re.on_frame(function()
 
             if ok_spawn and body_go then
                 pcall(function() body_go:add_ref() end)
-                local b_tf = body_go.call and body_go:call("get_Transform")
+                local b_tf = nil
+                pcall(function() b_tf = body_go:call("get_Transform") end)
                 if b_tf then
                     pcall(function() b_tf:call("set_Position", front_pos) end)
                 end
@@ -328,27 +339,39 @@ local function draw_spawner_ui(suffix)
         if imgui.button(">>> SPAWN CLAIRE REDFIELD (Instant Spawn) <<<##btn_inst" .. suffix) then
             spawner.click_count = spawner.click_count + 1
             log_debug("UI BUTTON CLICKED: Instant Spawn")
-            spawner.spawn_claire_body(0)
+            local ok, err = pcall(function() spawner.spawn_claire_body(0) end)
+            if not ok then
+                spawner.last_status = "Error: " .. tostring(err)
+                log_debug("Spawn execution error: " .. tostring(err))
+            end
         end
 
         imgui.spacing()
         if imgui.button("Spawn Claire + Head/Hair (Modular Test)##btn_mod" .. suffix) then
             spawner.click_count = spawner.click_count + 1
             log_debug("UI BUTTON CLICKED: Modular Spawn")
-            spawner.spawn_claire_modular(0)
+            local ok, err = pcall(function() spawner.spawn_claire_modular(0) end)
+            if not ok then
+                spawner.last_status = "Error: " .. tostring(err)
+                log_debug("Spawn execution error: " .. tostring(err))
+            end
         end
 
         imgui.same_line()
         if imgui.button("Spawn Claire (Tank Top)##btn_tank" .. suffix) then
             spawner.click_count = spawner.click_count + 1
             log_debug("UI BUTTON CLICKED: Tank Top Spawn")
-            spawner.spawn_claire_body(1)
+            local ok, err = pcall(function() spawner.spawn_claire_body(1) end)
+            if not ok then
+                spawner.last_status = "Error: " .. tostring(err)
+                log_debug("Spawn execution error: " .. tostring(err))
+            end
         end
 
         imgui.spacing()
         if imgui.button("Despawn Claire##btn_desp" .. suffix) then
             log_debug("UI BUTTON CLICKED: Despawn")
-            spawner.execute_despawn()
+            pcall(spawner.execute_despawn)
         end
     else
         imgui.text_colored("Waiting for game scene / Leon to load...", 1.0, 0.8, 0.2, 1.0)
@@ -356,12 +379,7 @@ local function draw_spawner_ui(suffix)
     end
 end
 
--- Embedded in REFramework Main Menu (with ##menu suffix)
-re.on_draw_ui(function()
-    draw_spawner_ui("##menu")
-end)
-
--- Dedicated Standalone Floating Window (with ##win suffix)
+-- Dedicated Standalone Floating Window
 re.on_frame(function()
     pcall(function()
         if imgui.begin_window("Claire Redfield Spawner (Duo Mode)", true, 0) then
@@ -369,4 +387,9 @@ re.on_frame(function()
             imgui.end_window()
         end
     end)
+end)
+
+-- REFramework Menu entry
+re.on_draw_ui(function()
+    draw_spawner_ui("##menu")
 end)
