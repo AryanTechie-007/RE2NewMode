@@ -262,30 +262,50 @@ end)
 -- =========================================================================
 -- 6. Clean, Minimalist ImGui Spawner UI
 -- =========================================================================
-re.on_draw_ui(function()
+local function draw_spawner_ui()
     imgui.text_colored("=== RE2 DUO MODE: CLAIRE REDFIELD SPAWNER ===", 0.3, 0.9, 1.0, 1.0)
     imgui.text("Status: " .. tostring(spawner.last_status))
     imgui.separator()
 
     local player = spawner.get_master_player()
-    imgui.text("Player (Leon): " .. (player and "Active in World" or "Waiting for game scene"))
-    imgui.separator()
+    if player then
+        imgui.text_colored("Player (Leon): ACTIVE IN SCENE", 0.2, 1.0, 0.4, 1.0)
+        imgui.spacing()
 
-    if imgui.button("SPAWN CLAIRE REDFIELD (Default Jacket)") then
-        spawner.pending_action = "spawn_default"
-    end
+        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Default Jacket) <<<") then
+            spawner.pending_action = "spawn_default"
+        end
 
-    imgui.same_line()
-    if imgui.button("Spawn Claire (Tank Top)") then
-        spawner.pending_action = "spawn_tank"
-    end
+        imgui.spacing()
+        if imgui.button("Spawn Claire (Tank Top)") then
+            spawner.pending_action = "spawn_tank"
+        end
+        imgui.same_line()
+        if imgui.button("Spawn Claire (Native Engine Cast)") then
+            spawner.pending_action = "spawn_native"
+        end
 
-    if imgui.button("Spawn Claire (Native Engine Cast)") then
-        spawner.pending_action = "spawn_native"
+        imgui.spacing()
+        if imgui.button("Despawn Claire") then
+            spawner.pending_action = "despawn"
+        end
+    else
+        imgui.text_colored("Waiting for game scene / Leon to load...", 1.0, 0.8, 0.2, 1.0)
+        imgui.text("Please load your game save or start a new game first.")
     end
+end
 
-    imgui.same_line()
-    if imgui.button("Despawn Claire") then
-        spawner.pending_action = "despawn"
-    end
+-- 1. Embedded inside REFramework Main Menu (under Script Generated UI)
+re.on_draw_ui(function()
+    draw_spawner_ui()
+end)
+
+-- 2. Standalone Floating Window (appears on screen when Insert is pressed)
+re.on_frame(function()
+    pcall(function()
+        if imgui.begin_window("Claire Redfield Spawner (Duo Mode)", true, 0) then
+            draw_spawner_ui()
+            imgui.end_window()
+        end
+    end)
 end)
