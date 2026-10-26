@@ -362,22 +362,38 @@ local function probe_room_system(player_go)
     end
 end
 
--- Query current room ID from RoomArea or RoomManager
+-- Query current room/area ID from StayAreaController, RoomArea or Managers
 local function get_room_id(game_obj)
     if not game_obj then return 0 end
 
-    -- Strategy A: via.GameObject RoomArea component
+    -- Strategy A: app.ropeway.StayAreaController (verified present on Leon)
     local r1 = 0
+    pcall(function()
+        local t = sdk.typeof("app.ropeway.StayAreaController")
+        if t and game_obj.call then
+            local comp = game_obj:call("getComponent(System.Type)", t)
+            if comp then
+                r1 = comp:call("get_CurrentAreaNo")
+                   or comp:call("get_CurrentAreaID")
+                   or comp:call("get_AreaNo")
+                   or comp:call("get_AreaID") or 0
+            end
+        end
+    end)
+    if r1 and r1 ~= 0 then return r1 end
+
+    -- Strategy B: via.GameObject RoomArea component
+    local r2 = 0
     pcall(function()
         local t = sdk.typeof("app.ropeway.RoomArea")
         if t and game_obj.call then
             local comp = game_obj:call("getComponent(System.Type)", t)
             if comp then
-                r1 = comp:call("get_CurrentRoomID") or 0
+                r2 = comp:call("get_CurrentRoomID") or 0
             end
         end
     end)
-    if r1 and r1 ~= 0 then return r1 end
+    if r2 and r2 ~= 0 then return r2 end
 
     -- Strategy B: app.ropeway.RoomManager singleton
     local r2 = 0
@@ -799,6 +815,19 @@ re.on_frame(function()
             end)
             table.insert(spawner.spawned_entities, body_obj)
             log_debug(string.format("Body instantiated at frame %d at (%.2f, %.2f, %.2f)", spawner.stream_frames, front_pos.x, front_pos.y, front_pos.z))
+
+            -- Inspect components on Claire's body_obj to identify Motion/Animation controllers
+            pcall(function()
+                local comps = body_obj:call("get_Components"):get_elements()
+                if comps then
+                    log_debug("Claire Body Components (" .. tostring(#comps) .. " total):")
+                    for i, c in ipairs(comps) do
+                        local cname = "unknown"
+                        pcall(function() cname = c:get_type_definition():get_full_name() end)
+                        log_debug("  [" .. i .. "] " .. cname)
+                    end
+                end
+            end)
 
             -- Set initial facing direction to face Leon directly
             if player_tf and b_tf then
