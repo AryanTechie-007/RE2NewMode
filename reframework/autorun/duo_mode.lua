@@ -159,7 +159,7 @@ re.on_draw_ui(function()
     end
 
     imgui.separator()
-    imgui.text_colored("--- Companion Spawner Diagnostics ---", 0.9, 0.9, 0.2, 1.0)
+    imgui.text_colored("--- Native Survivor Engine Spawner ---", 0.9, 0.9, 0.2, 1.0)
     local master_p = spawner.get_master_player()
     imgui.text("Master Player (Leon): " .. (master_p and "CONNECTED" or "WAITING FOR IN-GAME SCENE"))
 
@@ -171,37 +171,12 @@ re.on_draw_ui(function()
     imgui.text("Companion 3D Entity: " .. (spawner.companion_game_object and "ACTIVE (IN 3D WORLD)" or "NOT SPAWNED"))
     imgui.text("Spawn Status: " .. tostring(spawner.last_spawn_status))
 
-    if imgui.button("Spawn Companion (Clone & Rig)") then
+    if imgui.button("Spawn Companion (Native / Rigged)") then
         spawner.force_spawn()
     end
     imgui.same_line()
-    if imgui.button("Assemble Body (Option 1)") then
-        spawner.despawn_companion()
-        pcall(function()
-            local leader_pos = spawner.get_player_position(master_p)
-            if leader_pos then
-                local spawn_x = leader_pos.x + 1.5
-                local spawn_y = leader_pos.y
-                local spawn_z = leader_pos.z - 1.5
-                local spawn_pos = (Vector3f and Vector3f.new and Vector3f.new(spawn_x, spawn_y, spawn_z)) or { x = spawn_x, y = spawn_y, z = spawn_z }
-                local go_td = sdk.find_type_definition("via.GameObject")
-                if go_td then
-                    local create_method = go_td:get_method("create(System.String)")
-                    if create_method then
-                        local new_obj = create_method:call(nil, "DuoMode_ClaireCompanion")
-                        if new_obj then
-                            new_obj:add_ref()
-                            pcall(function() new_obj:call(".ctor") end)
-                            local tf = new_obj:call("get_Transform")
-                            if tf then tf:call("set_Position", spawn_pos) end
-                            spawner.companion_game_object = new_obj
-                            spawner.is_spawned = true
-                            spawner.last_spawn_status = "Option 1 Forced Assembly"
-                        end
-                    end
-                end
-            end
-        end)
+    if imgui.button("Dump Survivor Engine Types to Log") then
+        spawner.inspect_survivor_system()
     end
     imgui.same_line()
     if imgui.button("Despawn Companion") then

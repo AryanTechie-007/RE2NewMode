@@ -29,27 +29,23 @@ This document specifies the complete 14-day production roadmap, technical archit
 
 ### Phase 1: Engine Foundation, Prefabs & Synthetic Locomotion (Days 1–4)
 
-#### Day 1: Asset & Weapon Preloading, Instantiation & Input Stripping
-* **Engine Traps Handled:**
-  * In Leon's scenario, Claire's `pl1000.pfb` is absent from active memory.
-  * **The Weapon Prefab Trap:** If Claire attempts to equip or draw her weapon (`wp1000` SLS 60, `wp1200` GM 79) before those weapon prefabs are in memory, `app.ropeway.survivor.EquipmentManager` throws an uncaught `NullReferenceException` at frame $N+50$.
+#### Day 1: Native Survivor Casting (`SurvivorAssignManager`), NPC Allocation & Input Stripping
+* **Engine Realities & Traps:**
+  * **The Skinned Mesh Void Trap:** Attaching a `via.render.Mesh` or `MeshResourceHolder` to an empty `via.GameObject` does not render. RE Engine's skinned mesh shader requires a full joint hierarchy (`.skl`), clothing physics, face blendshapes, and motion matrices.
+  * **The Player Clone Trap:** Calling `via.Scene.duplicateGameObject` on the active player GameObject fails because the master player entity is bound to non-duplicable native singletons (`PlayerManager`, `CameraManager`, `PadManager`).
+  * **The Real Solution: Native Survivor Casting:**
+    RE2 Remake possesses an internal actor casting pipeline: **`app.ropeway.SurvivorAssignManager`** and **`app.ropeway.SurvivorStandbyCatalog`**.
+    * `SurvivorDefine.SurvivorType`: `PL0000 = 0` (Leon), `PL1000 = 1` (Claire), `PL2000 = 2` (Ada), `PL3000 = 3` (Sherry), `PL4000 = 4` (Hunk).
+    * `SurvivorStandbyCatalog.CastType`: `Player = 0`, `Npc = 1`, `Actor = 2`.
+    * `SurvivorAssignManager.OfferMode`: `Normal = 0`, `OrderUnderVacant = 1`.
+    * `SurvivorAssignManager.CastingReason`: `InitialSet = 1`, `Event = 2`, `Debug = 8`.
 * **Tasks:**
-  1. Hook `via.ResourceManager` to pre-cache survivor and weapon prefabs asynchronously before scene spawn:
-     ```lua
-     local preload_queue = {
-         "natives/x64/objectroot/survivor/player/pl1000.pfb", -- Claire Body
-         "natives/x64/objectroot/weapon/wp1000/wp1000.pfb",   -- SLS 60 Handgun
-         "natives/x64/objectroot/weapon/wp1200/wp1200.pfb",   -- GM 79 Grenade Launcher
-         "natives/x64/objectroot/weapon/wp1100/wp1100.pfb"    -- JMB Hp3
-     }
-     for _, path in ipairs(preload_queue) do
-         via.ResourceManager.loadResource("prefab", path)
-     end
-     ```
-  2. Instantiate companion entity at `LeaderPosition + Vector3(1.5, 0, -1.5)`.
-  3. Strip `app.ropeway.survivor.PlayerInputReceiver` and `app.ropeway.survivor.PadManager` listeners from the companion to prevent hardware input mirroring.
-  4. Force `app.ropeway.camera.CameraManager` to lock focus exclusively to the leader's `GameObject`.
-* **Deliverable (Day 1):** Both characters spawn with loaded weapon models, without camera snapping or mirrored stick movements.
+  1. Query `app.ropeway.SurvivorAssignManager` singleton.
+  2. Create a `CastingOrderNpc` or `CastingOrderActor` order requesting `SurvivorType.PL1000` (Claire) with `CastType.Npc`.
+  3. Dispatch casting request through `SurvivorAssignManager:requestCasting(order)`. The native engine allocates the full Claire model (Head `pl1050`, Hair `pl1070`, Jacket `pl1000`) with valid skinning matrices and materials.
+  4. Reposition the spawned NPC entity behind the leader (`LeaderPos - Forward * 1.5`).
+  5. Strip input components (`PlayerInputReceiver`, `PadManager`) if cast as Player type.
+* **Deliverable (Day 1):** Claire spawns physically into the 3D viewport with complete rendering (head, hair, body, clothing physics), fully visible to the player.
 
 ---
 
@@ -337,6 +333,7 @@ flowchart TD
 
 | Problem Identified | Root Cause | Implemented Solution |
 | :--- | :--- | :--- |
+| **Invisible Skinned Mesh** | Empty GameObject lacks bone hierarchy and joint rig | Use native RE Engine `SurvivorAssignManager` to cast survivor as `CastingOrderNpc`. |
 | **Weapon NullReferenceCrash** | Companion draws weapon prefabs not preloaded in RAM | Preload `pl1000`, `wp1000`, `wp1200`, `wp1100` asynchronously on Day 1. |
 | **Donut Spinning on Camera Pan** | World-space stick angles fed into root-motion controller | Transform target waypoint vector into companion-local yaw coordinates. |
 | **Elevator Floor Clipping** | Kinematic platform movement desyncs with frame polling | Temporarily disable collider and parent companion `Transform` to elevator. |

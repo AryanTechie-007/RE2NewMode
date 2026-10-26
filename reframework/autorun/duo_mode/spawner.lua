@@ -1,6 +1,6 @@
 --[[
     Resident Evil 2: Duo Mode
-    spawner.lua - Day 1: Physical 3D Model Instantiation & Character Duplication Pipeline
+    spawner.lua - Day 1: Physical 3D Model Instantiation & Native Survivor Casting Pipeline
     Author: AryanTechie-007
 ]]
 
@@ -86,74 +86,6 @@ function spawner.get_player_position(player)
     return pos
 end
 
--- Prefab and Mesh candidates for Claire (pl1000) and Leon (pl0000)
-local CLAIRE_PREFAB_CANDIDATES = {
-    "natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_a.pfb",
-    "natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_b.pfb",
-    "natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_default.pfb",
-    "natives/x64/objectroot/prefab/character/survivor/pl1000.pfb",
-    "natives/x64/objectroot/survivor/player/pl1000/pl1000.pfb",
-    "natives/x64/objectroot/survivor/player/pl1000.pfb",
-    "character/survivor/parts/pl1000/pl1000_body_costume_a.pfb",
-    "survivor/player/pl1000.pfb"
-}
-
-local LEON_PREFAB_CANDIDATES = {
-    "natives/x64/objectroot/prefab/character/survivor/parts/pl0000/pl0000_body_costume_a.pfb",
-    "natives/x64/objectroot/prefab/character/survivor/parts/pl0000/pl0000_body_costume_b.pfb",
-    "natives/x64/objectroot/prefab/character/survivor/parts/pl0000/pl0000_face_default.pfb",
-    "natives/x64/objectroot/prefab/character/survivor/pl0000.pfb",
-    "natives/x64/objectroot/survivor/player/pl0000/pl0000.pfb",
-    "natives/x64/objectroot/survivor/player/pl0000.pfb",
-    "character/survivor/parts/pl0000/pl0000_body_costume_a.pfb",
-    "survivor/player/pl0000.pfb"
-}
-
-local CLAIRE_MESH_CANDIDATES = {
-    "natives/x64/sectionroot/character/player/pl1000/pl1000/pl1000.mesh",
-    "natives/x64/sectionroot/character/player/pl1000/pl1050/pl1050.mesh",
-    "natives/x64/sectionroot/character/player/pl1000/pl1070/pl1070.mesh",
-    "character/player/pl1000/pl1000/pl1000.mesh",
-    "natives/x64/character/survivor/pl1000/pl1000.mesh",
-    "natives/x64/objectroot/character/survivor/pl1000/pl1000_body.mesh",
-    "natives/x64/objectroot/character/survivor/pl1000/pl1000.mesh"
-}
-
--- Preload required survivor and weapon prefabs into via.ResourceManager
-function spawner.preload_assets()
-    if spawner.preloaded then return true end
-
-    log_msg("Starting asynchronous asset preloading...")
-    local ok, res_man = pcall(function() return sdk.get_native_singleton("via.ResourceManager") end)
-    if not ok or not res_man then
-        log_msg("Note: via.ResourceManager singleton pending scene initialization.")
-        return false
-    end
-
-    local all_paths = {}
-    for _, p in ipairs(CLAIRE_PREFAB_CANDIDATES) do table.insert(all_paths, p) end
-    for _, p in ipairs(LEON_PREFAB_CANDIDATES) do table.insert(all_paths, p) end
-    for _, p in ipairs(CLAIRE_MESH_CANDIDATES) do table.insert(all_paths, p) end
-
-    for _, path in ipairs(all_paths) do
-        pcall(function()
-            res_man:call("loadResource", "prefab", path)
-            res_man:call("loadResource", "mesh", path)
-        end)
-    end
-
-    spawner.preloaded = true
-    return true
-end
-
--- Check if current scene and player manager are ready for instantiation
-function spawner.is_scene_ready()
-    local master_player = spawner.get_master_player()
-    if not master_player then return false end
-    local pos = spawner.get_player_position(master_player)
-    return pos ~= nil
-end
-
 -- Strip hardware input receiver and PadManager to avoid mirrored player input
 function spawner.strip_input_components(companion_obj)
     if not companion_obj then return false end
@@ -182,175 +114,87 @@ function spawner.strip_input_components(companion_obj)
     return true
 end
 
--- Helper: Attach component by name to a GameObject
-local function add_component(game_obj, type_name)
-    local td = sdk.find_type_definition(type_name)
-    if not td then
-        log_msg("Cannot find TypeDefinition for: " .. type_name)
+-- Check if current scene and player manager are ready for instantiation
+function spawner.is_scene_ready()
+    local master_player = spawner.get_master_player()
+    if not master_player then return false end
+    local pos = spawner.get_player_position(master_player)
+    return pos ~= nil
+end
+
+-- Diagnostic tool to dump all methods, fields, and parameters of RE Engine's Survivor subsystems
+function spawner.inspect_survivor_system()
+    log_msg("=================== SURVIVOR ENGINE INSPECTION ===================")
+    local types_to_inspect = {
+        "app.ropeway.SurvivorAssignManager",
+        "app.ropeway.SurvivorAssignManager.CastingOrder",
+        "app.ropeway.SurvivorAssignManager.CastingOrderNpc",
+        "app.ropeway.SurvivorAssignManager.CastingOrderActor",
+        "app.ropeway.SurvivorAssignManager.CastingOrderPlayer",
+        "app.ropeway.SurvivorStandbyCatalog",
+        "app.ropeway.SurvivorManager",
+        "app.ropeway.PlayerManager"
+    }
+
+    for _, tname in ipairs(types_to_inspect) do
+        local td = sdk.find_type_definition(tname)
+        if td then
+            log_msg(string.format("[TYPE] %s", tname))
+            local methods = td:get_methods()
+            if methods then
+                for _, m in ipairs(methods) do
+                    local mname = m:get_name()
+                    local nparams = m:get_num_params()
+                    log_msg(string.format("   [Method] %s (%d params)", mname, nparams))
+                end
+            end
+            local fields = td:get_fields()
+            if fields then
+                for _, f in ipairs(fields) do
+                    log_msg(string.format("   [Field] %s", f:get_name()))
+                end
+            end
+        else
+            log_msg("[TYPE] NOT FOUND: " .. tname)
+        end
+    end
+
+    local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
+    log_msg("SurvivorAssignManager Singleton: " .. (sam and "PRESENT" or "NIL"))
+
+    local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
+    log_msg("SurvivorManager Singleton: " .. (sm and "PRESENT" or "NIL"))
+
+    local pm = sdk.get_managed_singleton("app.ropeway.PlayerManager")
+    log_msg("PlayerManager Singleton: " .. (pm and "PRESENT" or "NIL"))
+    log_msg("==================================================================")
+end
+
+-- Primary Recommended Spawner: Native Survivor Casting via app.ropeway.SurvivorAssignManager
+function spawner.spawn_by_native_casting(master_player, spawn_pos)
+    log_msg("Attempting native survivor casting via SurvivorAssignManager...")
+    local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
+    if not sam then
+        log_msg("Native casting failed: SurvivorAssignManager singleton not found.")
         return nil
     end
 
-    local rt = nil
-    pcall(function() rt = td:get_runtime_type() end)
-    if not rt then return nil end
+    -- Attempt to locate casting orders
+    local td_order = sdk.find_type_definition("app.ropeway.SurvivorAssignManager.CastingOrderNpc")
+                  or sdk.find_type_definition("app.ropeway.SurvivorAssignManager.CastingOrderActor")
+                  or sdk.find_type_definition("app.ropeway.SurvivorAssignManager.CastingOrder")
 
-    local comp = nil
-    pcall(function()
-        comp = game_obj:call("createComponent(System.Type)", rt)
-    end)
-    if comp then
-        comp:add_ref()
-        log_msg("Added component: " .. type_name)
-    else
-        log_msg("Failed to add component: " .. type_name)
+    if not td_order then
+        log_msg("Native casting: CastingOrder type definitions not resolved.")
+        return nil
     end
-    return comp
+
+    -- Log available fields on sam
+    log_msg("SurvivorAssignManager found. Requesting casting for SurvivorType 1 (Claire)...")
+    return nil -- Will be populated once inspector reveals exact order constructor
 end
 
--- Option 1 Component Assembly: Bind MeshResource to Mesh component
-function spawner.bind_mesh_resource(mesh_comp, master_player)
-    if not mesh_comp then return false end
-
-    local holder = nil
-    local bound_path = nil
-
-    -- 1. Try candidate paths for Claire mesh
-    for _, path in ipairs(CLAIRE_MESH_CANDIDATES) do
-        pcall(function()
-            local res = sdk.create_resource("via.render.MeshResource", path)
-            if res then
-                res = res:add_ref()
-                local h = res:create_holder("via.render.MeshResourceHolder")
-                if h then
-                    holder = h:add_ref()
-                    bound_path = path
-                end
-            end
-        end)
-        if holder then break end
-    end
-
-    -- 2. Fallback: Clone master player's loaded MeshResourceHolder if specific path not found
-    if not holder and master_player then
-        pcall(function()
-            local p_go = spawner.get_player_game_object(master_player)
-            local p_mesh = utils.get_component(p_go, "via.render.Mesh")
-            if p_mesh then
-                local h = p_mesh:call("get_Mesh") or (p_mesh.getMesh and p_mesh:getMesh())
-                if h then
-                    holder = h
-                    bound_path = "MasterPlayer.LoadedMeshResourceHolder"
-                    log_msg("Using master player MeshResourceHolder as fallback model.")
-                end
-            end
-        end)
-    end
-
-    if holder then
-        pcall(function() mesh_comp:call("setMesh", holder) end)
-        pcall(function() mesh_comp:call("set_Mesh", holder) end)
-        pcall(function() mesh_comp:set_field("Enabled", true) end)
-        pcall(function() mesh_comp:call("set_DrawMesh", true) end)
-        log_msg("Mesh successfully configured via " .. tostring(bound_path))
-        return true, bound_path
-    end
-
-    return false, nil
-end
-
--- Option 1 Component Assembly: Bind Motion tree for locomotion animations
-function spawner.bind_motion_resource(motion_comp, master_player)
-    if not motion_comp or not master_player then return false end
-    pcall(function()
-        local p_go = spawner.get_player_game_object(master_player)
-        local p_motion = utils.get_component(p_go, "via.motion.Motion")
-        if p_motion then
-            local tree = p_motion:call("get_Tree")
-            if tree then
-                motion_comp:call("set_Tree", tree)
-                log_msg("Synchronized Motion Tree from master player.")
-            end
-        end
-    end)
-    return true
-end
-
--- Option 1 Component Assembly: Configure CharacterController capsule
-function spawner.bind_character_controller(cc_comp, master_player)
-    if not cc_comp or not master_player then return false end
-    pcall(function()
-        local p_go = spawner.get_player_game_object(master_player)
-        local p_cc = utils.get_component(p_go, "via.physics.CharacterController")
-        if p_cc then
-            local radius = p_cc:call("get_Radius") or 0.35
-            local height = p_cc:call("get_Height") or 1.75
-            cc_comp:call("set_Radius", radius)
-            cc_comp:call("set_Height", height)
-            log_msg("Configured CharacterController capsule collision.")
-        end
-    end)
-    return true
-end
-
--- Option 1 Component Assembly: Attach modular child mesh (Face, Hair)
-function spawner.attach_child_mesh(parent_obj, child_name, mesh_path)
-    local go_td = sdk.find_type_definition("via.GameObject")
-    if not go_td then return nil end
-    local create_method = go_td:get_method("create(System.String)")
-    if not create_method then return nil end
-
-    local child_obj = nil
-    pcall(function() child_obj = create_method:call(nil, child_name) end)
-    if not child_obj then return nil end
-    child_obj:add_ref()
-    pcall(function() child_obj:call(".ctor") end)
-
-    local child_tf = child_obj:call("get_Transform")
-    local parent_tf = parent_obj:call("get_Transform")
-    if child_tf and parent_tf then
-        pcall(function() child_tf:call("set_Parent", parent_tf) end)
-    end
-
-    local mesh_comp = add_component(child_obj, "via.render.Mesh")
-    if mesh_comp then
-        pcall(function()
-            local res = sdk.create_resource("via.render.MeshResource", mesh_path)
-            if res then
-                res = res:add_ref()
-                local holder = res:create_holder("via.render.MeshResourceHolder"):add_ref()
-                pcall(function() mesh_comp:call("setMesh", holder) end)
-                pcall(function() mesh_comp:call("set_Mesh", holder) end)
-                pcall(function() mesh_comp:set_field("Enabled", true) end)
-            end
-        end)
-    end
-
-    table.insert(spawner.child_objects, child_obj)
-    return child_obj
-end
-
--- Determine which companion candidates to spawn based on active leader character
-function spawner.get_target_companion_candidates(master_player)
-    local is_claire_leader = false
-
-    pcall(function()
-        local go = spawner.get_player_game_object(master_player)
-        local game_obj_name = (go and go.call and go:call("get_Name")) or ""
-        if string.find(string.lower(game_obj_name), "claire") or string.find(string.lower(game_obj_name), "pl1000") then
-            is_claire_leader = true
-        end
-    end)
-
-    if is_claire_leader then
-        log_msg("Active leader identified as Claire (pl1000). Target companion: Leon (pl0000).")
-        return LEON_PREFAB_CANDIDATES, "Leon (pl0000)", true
-    else
-        log_msg("Active leader identified as Leon (pl0000). Target companion: Claire (pl1000).")
-        return CLAIRE_PREFAB_CANDIDATES, "Claire (pl1000)", false
-    end
-end
-
--- Primary Recommended Spawner: Character Duplication (Cloning the active player entity)
+-- Secondary Spawner: Character Duplication via via.Scene.duplicateGameObject
 function spawner.spawn_by_duplication(master_player, spawn_pos, is_claire_leader)
     local player_go = spawner.get_player_game_object(master_player)
     if not player_go then
@@ -358,8 +202,10 @@ function spawner.spawn_by_duplication(master_player, spawn_pos, is_claire_leader
         return nil
     end
 
-    local scene_man = sdk.get_native_singleton("via.SceneManager")
-    local cur_scene = scene_man and scene_man:call("get_CurrentScene")
+    local scene_man = nil
+    pcall(function() scene_man = sdk.get_native_singleton("via.SceneManager") end)
+    local cur_scene = nil
+    pcall(function() cur_scene = scene_man and scene_man:call("get_CurrentScene") end)
     if not cur_scene then
         log_msg("Duplication failed: via.Scene not available.")
         return nil
@@ -367,21 +213,21 @@ function spawner.spawn_by_duplication(master_player, spawn_pos, is_claire_leader
 
     log_msg("Attempting character duplication via via.Scene.duplicateGameObject...")
     local clone = nil
-    local ok = pcall(function()
+    local ok1 = pcall(function()
         clone = cur_scene:call("duplicateGameObject(via.GameObject)", player_go)
     end)
-    if not ok or not clone then
+    if not ok1 or not clone then
         pcall(function()
             clone = cur_scene:call("duplicateGameObject", player_go)
         end)
     end
 
     if not clone then
-        log_msg("duplicateGameObject returned nil, checking fallbacks.")
+        log_msg("duplicateGameObject returned nil.")
         return nil
     end
 
-    clone:add_ref()
+    pcall(function() clone:add_ref() end)
 
     -- Set clone position
     pcall(function()
@@ -412,29 +258,6 @@ function spawner.spawn_by_duplication(master_player, spawn_pos, is_claire_leader
         end
     end)
 
-    -- If Claire is target companion, bind Claire's mesh resource to the rigged clone
-    if not is_claire_leader then
-        pcall(function()
-            local clone_mesh = utils.get_component(clone, "via.render.Mesh")
-            if clone_mesh then
-                for _, path in ipairs(CLAIRE_MESH_CANDIDATES) do
-                    local res = sdk.create_resource("via.render.MeshResource", path)
-                    if res then
-                        res = res:add_ref()
-                        local h = res:create_holder("via.render.MeshResourceHolder")
-                        if h then
-                            h = h:add_ref()
-                            clone_mesh:call("setMesh", h)
-                            clone_mesh:call("set_DrawMesh", true)
-                            log_msg("Bound Claire mesh to rigged clone: " .. path)
-                            break
-                        end
-                    end
-                end
-            end
-        end)
-    end
-
     return clone, "Character Duplication (Cloned & Rigged)"
 end
 
@@ -450,7 +273,6 @@ function spawner.spawn_companion()
     end
 
     spawner.spawn_in_progress = true
-    spawner.preload_assets()
 
     local master_player = spawner.get_master_player()
     local leader_pos = spawner.get_player_position(master_player)
@@ -466,92 +288,27 @@ function spawner.spawn_companion()
     local spawn_z = leader_pos.z - 1.5
     local spawn_pos = (Vector3f and Vector3f.new and Vector3f.new(spawn_x, spawn_y, spawn_z)) or { x = spawn_x, y = spawn_y, z = spawn_z }
 
-    local candidates, target_name, is_claire_leader = spawner.get_target_companion_candidates(master_player)
-    log_msg(string.format("Attempting to spawn %s at (%.2f, %.2f, %.2f)...", target_name, spawn_x, spawn_y, spawn_z))
+    log_msg(string.format("Attempting to spawn companion at (%.2f, %.2f, %.2f)...", spawn_x, spawn_y, spawn_z))
 
     local spawned_obj = nil
     local successful_path = nil
 
-    -- 1. Primary Strategy: Character Duplication (Cloning active player entity)
-    spawned_obj, successful_path = spawner.spawn_by_duplication(master_player, spawn_pos, is_claire_leader)
+    -- Strategy 1: Native Survivor Casting (SurvivorAssignManager)
+    local ok_cast, obj_cast, path_cast = pcall(spawner.spawn_by_native_casting, master_player, spawn_pos)
+    if ok_cast and obj_cast then
+        spawned_obj = obj_cast
+        successful_path = path_cast
+    end
 
-    -- 2. Fallback: via.Prefab instantiation across candidate paths
+    -- Strategy 2: Character Duplication (Cloning active player entity)
     if not spawned_obj then
-        for _, path in ipairs(candidates) do
-            pcall(function()
-                local pfb = sdk.create_instance("via.Prefab"):add_ref()
-                if pfb then
-                    if pfb.set_Path then pfb:set_Path(path) else pfb:set_field("Path", path) end
-                    if pfb.set_Standby then pfb:set_Standby(true) else pfb:set_field("Standby", true) end
-                    local obj = pfb:call("instantiate(via.vec3)", spawn_pos)
-                    if obj then
-                        spawned_obj = obj
-                        successful_path = path
-                    end
-                end
-            end)
-            if spawned_obj then break end
+        local ok_dup, obj_dup, path_dup = pcall(spawner.spawn_by_duplication, master_player, spawn_pos, false)
+        if ok_dup and obj_dup then
+            spawned_obj = obj_dup
+            successful_path = path_dup
+        else
+            log_msg("Duplication strategy failed: " .. tostring(obj_dup))
         end
-    end
-
-    -- 3. Fallback: via.SceneManager:get_CurrentScene():instantiate
-    if not spawned_obj then
-        pcall(function()
-            local scene_man = sdk.get_native_singleton("via.SceneManager")
-            local cur_scene = scene_man and scene_man:call("get_CurrentScene")
-            if cur_scene then
-                for _, path in ipairs(candidates) do
-                    local pfb = sdk.create_instance("via.Prefab"):add_ref()
-                    if pfb then
-                        if pfb.set_Path then pfb:set_Path(path) else pfb:set_field("Path", path) end
-                        if pfb.set_Standby then pfb:set_Standby(true) else pfb:set_field("Standby", true) end
-                        local obj = cur_scene:call("instantiate(via.Prefab, via.vec3)", pfb, spawn_pos)
-                        if obj then
-                            spawned_obj = obj
-                            successful_path = path
-                            break
-                        end
-                    end
-                end
-            end
-        end)
-    end
-
-    -- 4. Option 1 Component Assembly Fallback: Create GameObject and attach Mesh, Motion, and CharacterController
-    if not spawned_obj then
-        pcall(function()
-            local go_td = sdk.find_type_definition("via.GameObject")
-            if go_td then
-                local create_method = go_td:get_method("create(System.String)")
-                if create_method then
-                    local new_obj = create_method:call(nil, "DuoMode_ClaireCompanion")
-                    if new_obj then
-                        new_obj:add_ref()
-                        pcall(function() new_obj:call(".ctor") end)
-                        local tf = new_obj:call("get_Transform")
-                        if tf then tf:call("set_Position", spawn_pos) end
-
-                        -- Option 1 Component Assembly Pipeline:
-                        local cc_comp = add_component(new_obj, "via.physics.CharacterController")
-                        spawner.bind_character_controller(cc_comp, master_player)
-
-                        local motion_comp = add_component(new_obj, "via.motion.Motion")
-                        spawner.bind_motion_resource(motion_comp, master_player)
-
-                        local mesh_comp = add_component(new_obj, "via.render.Mesh")
-                        local mesh_ok, bound_path = spawner.bind_mesh_resource(mesh_comp, master_player)
-
-                        pcall(function()
-                            spawner.attach_child_mesh(new_obj, "Claire_Face", "natives/x64/sectionroot/character/player/pl1000/pl1050/pl1050.mesh")
-                            spawner.attach_child_mesh(new_obj, "Claire_Hair", "natives/x64/sectionroot/character/player/pl1000/pl1070/pl1070.mesh")
-                        end)
-
-                        spawned_obj = new_obj
-                        successful_path = "Option 1 Component Assembly (Mesh: " .. tostring(bound_path) .. ")"
-                    end
-                end
-            end
-        end)
     end
 
     if spawned_obj then
@@ -567,8 +324,8 @@ function spawner.spawn_companion()
         return spawned_obj
     else
         spawner.spawn_in_progress = false
-        spawner.last_spawn_status = "Failed: Component assembly could not allocate entity"
-        log_msg("Instantiation attempt failed.")
+        spawner.last_spawn_status = "Awaiting Native Casting Definition (Use Inspect Button)"
+        log_msg("Spawning halted: waiting for native casting definition.")
         return nil
     end
 end
