@@ -1,11 +1,12 @@
 --[[
     Resident Evil 2: Duo Mode
     test_harness.lua - Automated QA regression test suite
-    Updated for Days 1–8: Locomotion, Portals, Doors, Inventory, Combat, and Revive
+    Days 1–14 Architecture: Locomotion, Portals, Doors, Inventory, Combat, Revive, Banter & Saves
     Author: AryanTechie-007
 ]]
 
 local config = require("duo_mode/config")
+local utils = require("duo_mode/utils")
 local spawner = require("duo_mode/spawner")
 local locomotion = require("duo_mode/locomotion")
 local portal_defense = require("duo_mode/portal_defense")
@@ -14,6 +15,8 @@ local door_hooks = require("duo_mode/door_hooks")
 local inventory_manager = require("duo_mode/inventory_manager")
 local combat_ai = require("duo_mode/combat_ai")
 local health_manager = require("duo_mode/health_manager")
+local banter_manager = require("duo_mode/banter_manager")
+local save_manager = require("duo_mode/save_manager")
 
 local test_harness = {}
 
@@ -159,19 +162,105 @@ end
 
 -- Test 10: Multi-slot save path generation
 function test_harness.test_save_slot_indexing()
-    local function get_path(slot)
-        if slot == 99 then return "save_state_scenario_transition.json" end
-        return string.format("save_state_slot_%02d.json", slot)
-    end
-    local passed = (get_path(1) == "save_state_slot_01.json") and (get_path(99) == "save_state_scenario_transition.json")
+    local p1 = save_manager.get_save_path(1)
+    local p99 = save_manager.get_save_path(99)
+    local passed = (p1 == "reframework/data/duo_mode/save_state_slot_01.json") and (p99 == "reframework/data/duo_mode/save_state_scenario_transition.json")
     report("SaveSlotIndexing", passed, "Verified multi-slot isolation")
     return passed
 end
 
--- Run entire Days 1–8 regression test suite
+-- Test 11: Day 2 Fix - Euler & Quaternion Yaw Extraction Safety
+function test_harness.test_yaw_quaternion_math()
+    -- 1. Direct Euler table
+    local y1 = utils.get_transform_yaw({ y = 1.25 })
+    local c1 = (math.abs(y1 - 1.25) < 0.001)
+
+    -- 2. Direct Quaternion (90 degrees around Y: y = sin(pi/4) = 0.707106, w = cos(pi/4) = 0.707106)
+    local q_90 = { x = 0, y = 0.70710678, z = 0, w = 0.70710678 }
+    local y2 = utils.get_transform_yaw(q_90)
+    local c2 = (math.abs(y2 - (math.pi * 0.5)) < 0.01)
+
+    -- 3. Mock via.Transform returning Quaternion value type from get_Rotation
+    local mock_tf = {
+        call = function(self, method)
+            if method == "get_Rotation" then return q_90 end
+            return nil
+        end
+    }
+    local y3 = utils.get_transform_yaw(mock_tf)
+    local c3 = (math.abs(y3 - (math.pi * 0.5)) < 0.01)
+
+    -- 4. Nil safety
+    local y4 = utils.get_transform_yaw(nil)
+    local c4 = (y4 == 0.0)
+
+    local passed = c1 and c2 and c3 and c4
+    report("YawQuaternionMath", passed, "Crash-free yaw extraction across Euler & Quaternions")
+    return passed
+end
+
+-- Test 12: Safe Component Resolution (No System.ArgumentNullException)
+function test_harness.test_safe_component_lookup()
+    local r1 = utils.get_component(nil, "via.render.Mesh")
+    local r2 = utils.get_component({}, "via.render.Mesh")
+    local mock_go = {
+        call = function(self, method, arg)
+            if arg == nil then error("System.ArgumentNullException: Value cannot be null.") end
+            return nil
+        end
+    }
+    local ok, r3 = pcall(function() return utils.get_component(mock_go, "NonExistentType") end)
+    local passed = (r1 == nil) and (r2 == nil) and ok and (r3 == nil)
+    report("SafeComponentLookup", passed, "Guarded runtime type resolution and null checks")
+    return passed
+end
+
+-- Test 13: Day 10 - Banter Priority Queue & Dialogue Ordering
+function test_harness.test_banter_priority_queue()
+    banter_manager.voice_queue = {}
+    banter_manager.queue_line("idle_line", banter_manager.PRIORITY.IDLE, nil, "Idle chatter")
+    banter_manager.queue_line("critical_line", banter_manager.PRIORITY.CRITICAL, nil, "Critical bleed-out alert!")
+
+    -- Critical line must sort to position 1
+    local first = banter_manager.voice_queue[1]
+    local second = banter_manager.voice_queue[2]
+    local passed = (first and first.id == "critical_line") and (second and second.id == "idle_line")
+    report("BanterPriorityQueue", passed, "Validated priority ordering (Critical > Combat > Idle)")
+    return passed
+end
+
+-- Test 14: Day 13 - State Serialization and Deserialization
+function test_harness.test_state_serialization()
+    for i = 1, 8 do inventory_manager.remove_item(i) end
+    inventory_manager.add_item(1001, 15, "Handgun Ammo")
+    health_manager.current_hp = 880
+    fsm.set_state(fsm.STATES.COVER)
+
+    local saved = save_manager.save_slot(14)
+
+    -- Mutate state in memory
+    health_manager.current_hp = 100
+    fsm.set_state(fsm.STATES.WAIT)
+    inventory_manager.remove_item(1)
+
+    -- Restore state from disk
+    local loaded = save_manager.load_slot(14)
+    local check_hp = (health_manager.current_hp == 880)
+    local check_state = (fsm.current_state == fsm.STATES.COVER)
+    local has_ammo, slot = inventory_manager.has_item(1001)
+
+    -- Clean up test save file
+    pcall(function() os.remove(save_manager.get_save_path(14)) end)
+
+    local passed = saved and loaded and check_hp and check_state and has_ammo
+    report("StateSerialization", passed, "Persisted and restored HP, state, and inventory")
+    return passed
+end
+
+-- Run entire Days 1–14 regression test suite
 function test_harness.run_all()
     log_msg("====================================================")
-    log_msg("     RUNNING DUO MODE DAYS 1-8 REGRESSION HARNESS   ")
+    log_msg("     RUNNING DUO MODE DAYS 1-14 REGRESSION HARNESS  ")
     log_msg("====================================================")
 
     local p1, r1 = pcall(test_harness.test_synthetic_stick_math)
@@ -184,13 +273,18 @@ function test_harness.run_all()
     local p8, r8 = pcall(test_harness.test_combat_ammo_depletion)
     local p9, r9 = pcall(test_harness.test_anti_grab_and_revive)
     local p10, r10 = pcall(test_harness.test_save_slot_indexing)
+    local p11, r11 = pcall(test_harness.test_yaw_quaternion_math)
+    local p12, r12 = pcall(test_harness.test_safe_component_lookup)
+    local p13, r13 = pcall(test_harness.test_banter_priority_queue)
+    local p14, r14 = pcall(test_harness.test_state_serialization)
 
     local all_passed = (p1 and r1) and (p2 and r2) and (p3 and r3) and (p4 and r4) and 
                        (p5 and r5) and (p6 and r6) and (p7 and r7) and (p8 and r8) and 
-                       (p9 and r9) and (p10 and r10)
+                       (p9 and r9) and (p10 and r10) and (p11 and r11) and (p12 and r12) and
+                       (p13 and r13) and (p14 and r14)
 
     log_msg("====================================================")
-    log_msg("TEST SUMMARY: " .. (all_passed and "ALL TESTS PASSED (10/10)" or "SOME TESTS FAILED"))
+    log_msg(string.format("TEST SUMMARY: %s (14/14)", all_passed and "ALL TESTS PASSED" or "SOME TESTS FAILED"))
     log_msg("====================================================")
     return all_passed
 end

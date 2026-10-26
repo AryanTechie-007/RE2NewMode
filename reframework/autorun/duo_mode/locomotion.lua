@@ -5,6 +5,7 @@
 ]]
 
 local config = require("duo_mode/config")
+local utils = require("duo_mode/utils")
 
 local locomotion = {}
 
@@ -39,6 +40,9 @@ end
     and yaw relative to the target destination.
 ]]
 function locomotion.calculate_synthetic_stick(comp_pos, comp_yaw_rad, target_pos)
+    if not comp_pos or not target_pos then return 0.0, 0.0, 0.0, 0.0 end
+    comp_yaw_rad = comp_yaw_rad or 0.0
+
     local dx = target_pos.x - comp_pos.x
     local dz = target_pos.z - comp_pos.z
     local dist = math.sqrt(dx * dx + dz * dz)
@@ -61,7 +65,12 @@ function locomotion.calculate_synthetic_stick(comp_pos, comp_yaw_rad, target_pos
         target_magnitude = 1.0   -- Sprint to catch up
     elseif dist <= config.follow_distance_walk then
         -- Smooth deceleration into walk
-        target_magnitude = lerp(0.35, 0.6, (dist - config.follow_distance_min) / (config.follow_distance_walk - config.follow_distance_min))
+        local range = config.follow_distance_walk - config.follow_distance_min
+        if range > 0.001 then
+            target_magnitude = lerp(0.35, 0.6, (dist - config.follow_distance_min) / range)
+        else
+            target_magnitude = 0.5
+        end
     end
 
     local stick_x = math.sin(local_angle) * target_magnitude
@@ -77,10 +86,11 @@ end
 function locomotion.get_leader_anchor_point(leader_transform)
     if not leader_transform then return nil end
 
-    local leader_pos = leader_transform:call("get_Position")
-    local leader_rot = leader_transform:call("get_Rotation")
-    local euler = leader_rot:call("get_EulerAngles")
-    local leader_yaw = euler.y
+    local leader_pos = nil
+    pcall(function() leader_pos = leader_transform:call("get_Position") end)
+    if not leader_pos then return nil end
+
+    local leader_yaw = utils.get_transform_yaw(leader_transform)
 
     -- Project offset backwards in direction of leader facing
     local offset_x = -math.sin(leader_yaw) * config.rear_offset
@@ -107,7 +117,7 @@ function locomotion.apply_acoustic_damping(stick_x, stick_y, is_stealth_required
 
     local mag = math.sqrt(stick_x * stick_x + stick_y * stick_y)
     if mag > config.licker_max_stick_magnitude then
-        local scale = config.licker_max_stick_magnitude / mag
+        local scale = config.licker_max_stick_magnitude / (mag > 0.0001 and mag or 1.0)
         return stick_x * scale, stick_y * scale
     end
     return stick_x, stick_y
@@ -119,15 +129,22 @@ end
 ]]
 function locomotion.update_locomotion(companion_obj, leader_obj, delta_time, is_stealth_zone)
     if not companion_obj or not leader_obj then return 0.0, 0.0, 0.0 end
+    delta_time = delta_time or 0.016
 
-    local leader_transform = leader_obj:call("get_Transform")
-    local comp_transform = companion_obj:call("get_Transform")
+    local leader_transform = nil
+    local comp_transform = nil
+    pcall(function()
+        leader_transform = leader_obj:call("get_Transform")
+        comp_transform = companion_obj:call("get_Transform")
+    end)
     if not leader_transform or not comp_transform then return 0.0, 0.0, 0.0 end
 
-    local comp_pos = comp_transform:call("get_Position")
-    local comp_rot = comp_transform:call("get_Rotation")
-    local comp_euler = comp_rot:call("get_EulerAngles")
-    local comp_yaw = comp_euler.y
+    local comp_pos = nil
+    pcall(function() comp_pos = comp_transform:call("get_Position") end)
+    if not comp_pos then return 0.0, 0.0, 0.0 end
+
+    -- Safe yaw extraction using utils
+    local comp_yaw = utils.get_transform_yaw(comp_transform)
 
     -- 1. Compute target waypoint behind leader
     local target_pos = locomotion.get_leader_anchor_point(leader_transform)
@@ -153,26 +170,26 @@ function locomotion.update_locomotion(companion_obj, leader_obj, delta_time, is_
             local half_yaw = new_yaw * 0.5
             local qy = math.sin(half_yaw)
             local qw = math.cos(half_yaw)
-            local new_rot = Quaternion and Quaternion.new(0, qy, 0, qw) or { x = 0, y = qy, z = 0, w = qw }
+            local new_rot = (Quaternion and Quaternion.new and Quaternion.new(0, qy, 0, qw)) or { x = 0, y = qy, z = 0, w = qw }
             comp_transform:call("set_Rotation", new_rot)
         end)
     end
 
     -- 6. Physical Translation via CharacterController
     pcall(function()
-        local char_ctrl = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.physics.CharacterController"))
+        local char_ctrl = utils.get_component(companion_obj, "via.physics.CharacterController")
         if char_ctrl then
             local speed = locomotion.current_magnitude * 3.8 -- Native jog speed in m/s
             local vx = math.sin(comp_yaw) * speed * delta_time
             local vz = math.cos(comp_yaw) * speed * delta_time
-            local move_delta = Vector3f and Vector3f.new(vx, 0, vz) or { x = vx, y = 0, z = vz }
+            local move_delta = (Vector3f and Vector3f.new and Vector3f.new(vx, 0, vz)) or { x = vx, y = 0, z = vz }
             char_ctrl:call("move", move_delta)
         end
     end)
 
     -- 7. Root-Motion Animation Blending via MotionFsm2
     pcall(function()
-        local motion_fsm = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.motion.MotionFsm2"))
+        local motion_fsm = utils.get_component(companion_obj, "via.motion.MotionFsm2")
         if motion_fsm then
             motion_fsm:call("setVariable(System.String, System.Single)", "MoveSpeed", locomotion.current_magnitude)
         end

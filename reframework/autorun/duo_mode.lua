@@ -1,7 +1,7 @@
 --[[
     Resident Evil 2: Duo Mode
     duo_mode.lua - Master entry point loaded by REFramework
-    Days 1–8 Production Architecture
+    Production Architecture: Days 1–14
     Author: AryanTechie-007
 ]]
 
@@ -16,9 +16,10 @@ local function log_msg(str)
     end
 end
 
-log_msg("[DuoMode] Initializing Days 1–8 modules...")
+log_msg("[DuoMode] Initializing Duo Mode production modules...")
 
 local config = require("duo_mode/config")
+local utils = require("duo_mode/utils")
 local spawner = require("duo_mode/spawner")
 local locomotion = require("duo_mode/locomotion")
 local portal_defense = require("duo_mode/portal_defense")
@@ -28,6 +29,9 @@ local door_hooks = require("duo_mode/door_hooks")
 local inventory_manager = require("duo_mode/inventory_manager")
 local combat_ai = require("duo_mode/combat_ai")
 local health_manager = require("duo_mode/health_manager")
+local audio_bridge = require("duo_mode/audio_bridge")
+local banter_manager = require("duo_mode/banter_manager")
+local save_manager = require("duo_mode/save_manager")
 local test_harness = require("duo_mode/test_harness")
 
 -- Run regression test suite on startup
@@ -44,6 +48,7 @@ re.on_script_reset(function()
     health_manager.current_hp = config.companion_max_hp
     health_manager.is_downed = false
     fsm.set_state(fsm.STATES.FOLLOW)
+    audio_bridge.stop_all()
 end)
 
 -- Master frame update loop
@@ -51,13 +56,16 @@ re.on_frame(function()
     if not config.enabled then return end
     current_gametime = current_gametime + 0.016
 
-    -- Check hardware trigger for tactical command wheel
-    command_wheel.update_input()
+    -- Day 9: Audio lifecycle monitoring (pause / focus / game over)
+    pcall(audio_bridge.update_lifecycle)
+
+    -- Day 4: Check hardware trigger for tactical command wheel
+    pcall(command_wheel.update_input)
 
     -- Ensure companion is spawned once the scene is ready
     if not spawner.is_spawned then
         if spawner.is_scene_ready() then
-            spawner.spawn_companion()
+            pcall(spawner.spawn_companion)
         end
     end
 
@@ -65,7 +73,11 @@ re.on_frame(function()
     local master_player = spawner.get_master_player()
     if spawner.is_spawned and spawner.companion_game_object then
         -- Update FSM and bleed-out timer
-        local status = fsm.update(0.016, health_manager.current_hp)
+        local status = nil
+        pcall(function()
+            status = fsm.update(0.016, health_manager.current_hp)
+        end)
+
         if status == "GAME_OVER" then
             local game_over_flow = sdk.get_managed_singleton("app.ropeway.gamemastering.GameOverFlow")
                                 or sdk.get_managed_singleton("app.ropeway.GameOverManager")
@@ -75,34 +87,39 @@ re.on_frame(function()
         end
 
         -- Day 5: Update door state machine and cutscene protection
-        door_hooks.update(spawner.companion_game_object)
+        pcall(door_hooks.update, spawner.companion_game_object)
 
         -- Day 8: Update health and proximity revive checks
         if master_player then
-            health_manager.update(spawner.companion_game_object, master_player, 0.016)
+            pcall(health_manager.update, spawner.companion_game_object, master_player, 0.016)
         end
 
-        -- State-specific execution
+        -- Day 10: Dynamic Banter Engine update
+        local is_safe_room = (portal_defense.last_leader_room == 100 or portal_defense.last_leader_room == 102)
+        pcall(banter_manager.update, current_gametime, 0.016, health_manager.current_hp, health_manager.max_hp, is_safe_room)
+
+        -- State-specific execution (Crash-Protected)
         if fsm.current_state == fsm.STATES.FOLLOW and master_player then
             -- Day 2: Locomotion root-motion tracking
-            locomotion.update_locomotion(spawner.companion_game_object, master_player, 0.016, false)
+            pcall(locomotion.update_locomotion, spawner.companion_game_object, master_player, 0.016, false)
             -- Day 3: Portal room culling defense
-            portal_defense.update(spawner.companion_game_object, master_player)
+            pcall(portal_defense.update, spawner.companion_game_object, master_player)
 
         elseif fsm.current_state == fsm.STATES.COVER and master_player then
             -- Day 7: Combat AI target acquisition and muzzle-ray firing
-            locomotion.update_locomotion(spawner.companion_game_object, master_player, 0.016, false)
-            combat_ai.update(spawner.companion_game_object, master_player, current_gametime)
+            pcall(locomotion.update_locomotion, spawner.companion_game_object, master_player, 0.016, false)
+            pcall(combat_ai.update, spawner.companion_game_object, master_player, current_gametime)
 
         elseif fsm.current_state == fsm.STATES.WAIT then
             -- Hold position; zero velocity
         end
     end
 
-    -- Render in-game floating HUD overlays (Command Wheel, Inventory, Downed HUD)
+    -- Render in-game floating HUD overlays (Command Wheel, Inventory, Downed HUD, Subtitles)
     pcall(command_wheel.draw)
     pcall(inventory_manager.draw_ui)
     pcall(health_manager.draw_ui)
+    pcall(banter_manager.draw_subtitles)
 end)
 
 -- REFramework Menu rendering loop (inside Script Generated UI)
@@ -145,7 +162,7 @@ re.on_draw_ui(function()
     imgui.text_colored("--- Companion Spawner Diagnostics ---", 0.9, 0.9, 0.2, 1.0)
     local master_p = spawner.get_master_player()
     imgui.text("Master Player (Leon): " .. (master_p and "CONNECTED" or "WAITING FOR IN-GAME SCENE"))
-    
+
     local pos = master_p and spawner.get_player_position(master_p)
     if pos then
         imgui.text(string.format("Player Coordinates: (%.2f, %.2f, %.2f)", pos.x, pos.y, pos.z))
@@ -154,14 +171,63 @@ re.on_draw_ui(function()
     imgui.text("Companion 3D Entity: " .. (spawner.companion_game_object and "ACTIVE (IN 3D WORLD)" or "NOT SPAWNED"))
     imgui.text("Spawn Status: " .. tostring(spawner.last_spawn_status))
 
-    if imgui.button("Assemble Claire 3D Body (Option 1)") then
+    if imgui.button("Spawn Companion (Clone & Rig)") then
         spawner.force_spawn()
     end
     imgui.same_line()
-    if imgui.button("Despawn Claire") then
+    if imgui.button("Assemble Body (Option 1)") then
         spawner.despawn_companion()
+        pcall(function()
+            local leader_pos = spawner.get_player_position(master_p)
+            if leader_pos then
+                local spawn_x = leader_pos.x + 1.5
+                local spawn_y = leader_pos.y
+                local spawn_z = leader_pos.z - 1.5
+                local spawn_pos = (Vector3f and Vector3f.new and Vector3f.new(spawn_x, spawn_y, spawn_z)) or { x = spawn_x, y = spawn_y, z = spawn_z }
+                local go_td = sdk.find_type_definition("via.GameObject")
+                if go_td then
+                    local create_method = go_td:get_method("create(System.String)")
+                    if create_method then
+                        local new_obj = create_method:call(nil, "DuoMode_ClaireCompanion")
+                        if new_obj then
+                            new_obj:add_ref()
+                            pcall(function() new_obj:call(".ctor") end)
+                            local tf = new_obj:call("get_Transform")
+                            if tf then tf:call("set_Position", spawn_pos) end
+                            spawner.companion_game_object = new_obj
+                            spawner.is_spawned = true
+                            spawner.last_spawn_status = "Option 1 Forced Assembly"
+                        end
+                    end
+                end
+            end
+        end)
+    end
+    imgui.same_line()
+    if imgui.button("Despawn Companion") then
+        spawner.despawn_companion()
+    end
+
+    imgui.separator()
+    imgui.text_colored("--- Save / Load & Banter Controls ---", 0.2, 0.8, 0.9, 1.0)
+    if imgui.button("Save State (Slot 1)") then
+        save_manager.save_slot(1)
+    end
+    imgui.same_line()
+    if imgui.button("Load State (Slot 1)") then
+        save_manager.load_slot(1)
+    end
+    imgui.same_line()
+    if imgui.button("Trigger Safe Room Voice") then
+        banter_manager.safe_room_voiced = false
+        banter_manager.on_safe_room_tick(6.0, true)
+    end
+    imgui.same_line()
+    if imgui.button("Trigger Low HP Voice") then
+        banter_manager.danger_voiced = false
+        banter_manager.on_health_check(200, 1000)
     end
     imgui.separator()
 end)
 
-log_msg("[DuoMode] Days 1–8 hooks registered successfully.")
+log_msg("[DuoMode] Master duo_mode.lua initialized successfully.")

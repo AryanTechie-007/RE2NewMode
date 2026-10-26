@@ -7,6 +7,7 @@
 local config = require("duo_mode/config")
 local fsm = require("duo_mode/fsm")
 local inventory_manager = require("duo_mode/inventory_manager")
+local utils = require("duo_mode/utils")
 
 local combat_ai = {}
 combat_ai.last_fire_time = 0.0
@@ -33,16 +34,16 @@ end
 ]]
 function combat_ai.get_muzzle_position(companion_obj)
     if not companion_obj then
-        return Vector3f and Vector3f.new(0, 1.3, 0) or { x = 0, y = 1.3, z = 0 }
+        return (Vector3f and Vector3f.new and Vector3f.new(0, 1.3, 0)) or { x = 0, y = 1.3, z = 0 }
     end
 
     local muzzle_pos = nil
     pcall(function()
-        local mesh = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.render.Mesh"))
+        local mesh = utils.get_component(companion_obj, "via.render.Mesh")
         if mesh then
             local transform = mesh:call("get_Transform")
             -- Attempt to locate standard firearm muzzle joint
-            local joint = transform:call("getJointByName", "snd_muzzle") or transform:call("getJointByName", "snd_r_hand")
+            local joint = transform and (transform:call("getJointByName", "snd_muzzle") or transform:call("getJointByName", "snd_r_hand"))
             if joint then
                 muzzle_pos = joint:call("get_Position")
             end
@@ -54,18 +55,16 @@ function combat_ai.get_muzzle_position(companion_obj)
             local transform = companion_obj:call("get_Transform")
             if transform then
                 local comp_pos = transform:call("get_Position")
-                local comp_rot = transform:call("get_Rotation")
-                local euler = comp_rot and comp_rot:call("get_EulerAngles")
-                local yaw = euler and euler.y or 0.0
+                local yaw = utils.get_transform_yaw(transform)
                 local fx = comp_pos.x + math.sin(yaw) * 0.4
                 local fz = comp_pos.z + math.cos(yaw) * 0.4
-                muzzle_pos = Vector3f and Vector3f.new(fx, comp_pos.y + 1.3, fz) or { x = fx, y = comp_pos.y + 1.3, z = fz }
+                muzzle_pos = (Vector3f and Vector3f.new and Vector3f.new(fx, comp_pos.y + 1.3, fz)) or { x = fx, y = comp_pos.y + 1.3, z = fz }
             end
         end)
     end
 
     if not muzzle_pos then
-        muzzle_pos = Vector3f and Vector3f.new(0, 1.3, 0) or { x = 0, y = 1.3, z = 0 }
+        muzzle_pos = (Vector3f and Vector3f.new and Vector3f.new(0, 1.3, 0)) or { x = 0, y = 1.3, z = 0 }
     end
 
     return muzzle_pos

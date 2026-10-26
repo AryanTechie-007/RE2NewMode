@@ -5,6 +5,7 @@
 ]]
 
 local config = require("duo_mode/config")
+local utils = require("duo_mode/utils")
 local fsm = require("duo_mode/fsm")
 
 local door_hooks = {}
@@ -47,14 +48,14 @@ function door_hooks.handle_cutscenes(companion_obj)
         door_hooks.cutscene_active = true
         log_msg("Cutscene started: hiding companion mesh and de-tagging to prevent actor hijacking.")
         pcall(function()
-            local mesh = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.render.Mesh"))
+            local mesh = utils.get_component(companion_obj, "via.render.Mesh")
             if mesh then mesh:set_field("Enabled", false) end
         end)
     elseif not is_playing and door_hooks.cutscene_active then
         door_hooks.cutscene_active = false
         log_msg("Cutscene ended: restoring companion mesh.")
         pcall(function()
-            local mesh = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.render.Mesh"))
+            local mesh = utils.get_component(companion_obj, "via.render.Mesh")
             if mesh then mesh:set_field("Enabled", true) end
         end)
     end

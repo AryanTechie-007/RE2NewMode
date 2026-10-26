@@ -5,6 +5,7 @@
 ]]
 
 local config = require("duo_mode/config")
+local utils = require("duo_mode/utils")
 
 local portal_defense = {}
 portal_defense.is_on_elevator = false
@@ -30,7 +31,7 @@ function portal_defense.get_room_id(game_obj)
     if not game_obj then return 0 end
     local room_id = 0
     pcall(function()
-        local room_area = game_obj:call("getComponent(System.Type)", sdk.find_type_definition("app.ropeway.RoomArea"))
+        local room_area = utils.get_component(game_obj, "app.ropeway.RoomArea")
         if room_area then
             room_id = room_area:call("get_CurrentRoomID") or 0
         end
@@ -53,22 +54,27 @@ function portal_defense.teleport_to_leader(companion_obj, leader_obj, offset_dis
 
     pcall(function()
         local leader_transform = leader_obj:call("get_Transform")
+        if not leader_transform then return end
         local leader_pos = leader_transform:call("get_Position")
-        local leader_rot = leader_transform:call("get_Rotation")
-        local leader_yaw = leader_rot:call("get_EulerAngles").y
+        if not leader_pos then return end
+
+        local leader_yaw = utils.get_transform_yaw(leader_transform)
 
         local safe_x = leader_pos.x - math.sin(leader_yaw) * offset_dist
         local safe_y = leader_pos.y
         local safe_z = leader_pos.z - math.cos(leader_yaw) * offset_dist
 
-        local safe_pos = Vector3f and Vector3f.new(safe_x, safe_y, safe_z) or { x = safe_x, y = safe_y, z = safe_z }
+        local safe_pos = (Vector3f and Vector3f.new and Vector3f.new(safe_x, safe_y, safe_z)) or { x = safe_x, y = safe_y, z = safe_z }
 
         -- Warp physics character controller to safe position
-        local char_ctrl = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.physics.CharacterController"))
+        local char_ctrl = utils.get_component(companion_obj, "via.physics.CharacterController")
         if char_ctrl then
-            char_ctrl:call("warp", safe_pos)
+            pcall(function() char_ctrl:call("warp", safe_pos) end)
         else
-            companion_obj:call("get_Transform"):call("set_Position", safe_pos)
+            pcall(function()
+                local comp_tf = companion_obj:call("get_Transform")
+                if comp_tf then comp_tf:call("set_Position", safe_pos) end
+            end)
         end
         log_msg(string.format("Portal catch-up: companion teleported to safe room pos (%.2f, %.2f, %.2f)", safe_x, safe_y, safe_z))
     end)
@@ -80,14 +86,16 @@ function portal_defense.enter_elevator(companion_obj, elevator_game_object)
 
     log_msg("Elevator entered: parenting companion transform and disabling capsule collision.")
     pcall(function()
-        local comp_collider = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.physics.CharacterController"))
+        local comp_collider = utils.get_component(companion_obj, "via.physics.CharacterController")
         if comp_collider then
-            comp_collider:set_field("Enabled", false)
+            pcall(function() comp_collider:set_field("Enabled", false) end)
         end
 
         local comp_transform = companion_obj:call("get_Transform")
         local elevator_transform = elevator_game_object:call("get_Transform")
-        comp_transform:call("set_Parent", elevator_transform)
+        if comp_transform and elevator_transform then
+            pcall(function() comp_transform:call("set_Parent", elevator_transform) end)
+        end
 
         portal_defense.is_on_elevator = true
         portal_defense.parented_elevator = elevator_game_object
@@ -101,11 +109,13 @@ function portal_defense.exit_elevator(companion_obj)
     log_msg("Elevator exited: restoring companion transform parent and capsule collision.")
     pcall(function()
         local comp_transform = companion_obj:call("get_Transform")
-        comp_transform:call("set_Parent", nil)
+        if comp_transform then
+            pcall(function() comp_transform:call("set_Parent", nil) end)
+        end
 
-        local comp_collider = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.physics.CharacterController"))
+        local comp_collider = utils.get_component(companion_obj, "via.physics.CharacterController")
         if comp_collider then
-            comp_collider:set_field("Enabled", true)
+            pcall(function() comp_collider:set_field("Enabled", true) end)
         end
 
         portal_defense.is_on_elevator = false
@@ -125,8 +135,14 @@ function portal_defense.update(companion_obj, leader_obj)
 
     -- Check Euclidean distance fallback
     pcall(function()
-        local leader_pos = leader_obj:call("get_Transform"):call("get_Position")
-        local comp_pos = companion_obj:call("get_Transform"):call("get_Position")
+        local leader_tf = leader_obj:call("get_Transform")
+        local comp_tf = companion_obj:call("get_Transform")
+        if not leader_tf or not comp_tf then return end
+
+        local leader_pos = leader_tf:call("get_Position")
+        local comp_pos = comp_tf:call("get_Position")
+        if not leader_pos or not comp_pos then return end
+
         local dx = leader_pos.x - comp_pos.x
         local dy = leader_pos.y - comp_pos.y
         local dz = leader_pos.z - comp_pos.z

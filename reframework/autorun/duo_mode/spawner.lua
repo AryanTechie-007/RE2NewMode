@@ -1,10 +1,11 @@
 --[[
     Resident Evil 2: Duo Mode
-    spawner.lua - Day 1: Physical 3D Model Instantiation & Option 1 Component Assembly
+    spawner.lua - Day 1: Physical 3D Model Instantiation & Character Duplication Pipeline
     Author: AryanTechie-007
 ]]
 
 local config = require("duo_mode/config")
+local utils = require("duo_mode/utils")
 
 local spawner = {}
 spawner.companion_game_object = nil
@@ -30,8 +31,8 @@ end
 
 -- Resolve the master player context across all known RE2 managed singletons
 function spawner.get_master_player()
-    local player_man = sdk.get_managed_singleton(sdk.game_namespace("PlayerManager"))
-                    or sdk.get_managed_singleton("app.ropeway.PlayerManager")
+    local player_man = sdk.get_managed_singleton("app.ropeway.PlayerManager")
+                    or sdk.get_managed_singleton(sdk.game_namespace("PlayerManager"))
     if not player_man then return nil end
 
     local player = nil
@@ -158,21 +159,25 @@ function spawner.strip_input_components(companion_obj)
     if not companion_obj then return false end
 
     log_msg("Stripping PlayerInputReceiver and PadManager from companion...")
-    pcall(function()
-        local input_receiver = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("app.ropeway.survivor.PlayerInputReceiver"))
-        if input_receiver then
-            input_receiver:set_field("Enabled", false)
-            log_msg("PlayerInputReceiver disabled successfully.")
-        end
-    end)
+    local input_types = {
+        "app.ropeway.survivor.PlayerInputReceiver",
+        "app.ropeway.PlayerInputReceiver",
+        "app.ropeway.survivor.PadManager",
+        "app.ropeway.PadManager",
+        "app.ropeway.player.PlayerInputReceiver",
+        "via.hid.GamePad"
+    }
 
-    pcall(function()
-        local pad_manager = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("app.ropeway.survivor.PadManager"))
-        if pad_manager then
-            pad_manager:set_field("Enabled", false)
-            log_msg("PadManager disabled successfully.")
-        end
-    end)
+    for _, t in ipairs(input_types) do
+        pcall(function()
+            local comp = utils.get_component(companion_obj, t)
+            if comp then
+                if comp.set_field then pcall(function() comp:set_field("Enabled", false) end) end
+                if comp.call then pcall(function() comp:call("set_Enabled", false) end) end
+                log_msg("Disabled input component: " .. t)
+            end
+        end)
+    end
 
     return true
 end
@@ -185,7 +190,10 @@ local function add_component(game_obj, type_name)
         return nil
     end
 
-    local rt = td:get_runtime_type()
+    local rt = nil
+    pcall(function() rt = td:get_runtime_type() end)
+    if not rt then return nil end
+
     local comp = nil
     pcall(function()
         comp = game_obj:call("createComponent(System.Type)", rt)
@@ -226,7 +234,7 @@ function spawner.bind_mesh_resource(mesh_comp, master_player)
     if not holder and master_player then
         pcall(function()
             local p_go = spawner.get_player_game_object(master_player)
-            local p_mesh = p_go and p_go:call("getComponent(System.Type)", sdk.find_type_definition("via.render.Mesh"):get_runtime_type())
+            local p_mesh = utils.get_component(p_go, "via.render.Mesh")
             if p_mesh then
                 local h = p_mesh:call("get_Mesh") or (p_mesh.getMesh and p_mesh:getMesh())
                 if h then
@@ -255,7 +263,7 @@ function spawner.bind_motion_resource(motion_comp, master_player)
     if not motion_comp or not master_player then return false end
     pcall(function()
         local p_go = spawner.get_player_game_object(master_player)
-        local p_motion = p_go and p_go:call("getComponent(System.Type)", sdk.find_type_definition("via.motion.Motion"):get_runtime_type())
+        local p_motion = utils.get_component(p_go, "via.motion.Motion")
         if p_motion then
             local tree = p_motion:call("get_Tree")
             if tree then
@@ -272,7 +280,7 @@ function spawner.bind_character_controller(cc_comp, master_player)
     if not cc_comp or not master_player then return false end
     pcall(function()
         local p_go = spawner.get_player_game_object(master_player)
-        local p_cc = p_go and p_go:call("getComponent(System.Type)", sdk.find_type_definition("via.physics.CharacterController"):get_runtime_type())
+        local p_cc = utils.get_component(p_go, "via.physics.CharacterController")
         if p_cc then
             local radius = p_cc:call("get_Radius") or 0.35
             local height = p_cc:call("get_Height") or 1.75
@@ -291,10 +299,11 @@ function spawner.attach_child_mesh(parent_obj, child_name, mesh_path)
     local create_method = go_td:get_method("create(System.String)")
     if not create_method then return nil end
 
-    local child_obj = create_method:call(nil, child_name)
+    local child_obj = nil
+    pcall(function() child_obj = create_method:call(nil, child_name) end)
     if not child_obj then return nil end
     child_obj:add_ref()
-    child_obj:call(".ctor")
+    pcall(function() child_obj:call(".ctor") end)
 
     local child_tf = child_obj:call("get_Transform")
     local parent_tf = parent_obj:call("get_Transform")
@@ -302,22 +311,18 @@ function spawner.attach_child_mesh(parent_obj, child_name, mesh_path)
         pcall(function() child_tf:call("set_Parent", parent_tf) end)
     end
 
-    local mesh_td = sdk.find_type_definition("via.render.Mesh")
-    if mesh_td then
-        local mesh_comp = child_obj:call("createComponent(System.Type)", mesh_td:get_runtime_type())
-        if mesh_comp then
-            mesh_comp:add_ref()
-            pcall(function()
-                local res = sdk.create_resource("via.render.MeshResource", mesh_path)
-                if res then
-                    res = res:add_ref()
-                    local holder = res:create_holder("via.render.MeshResourceHolder"):add_ref()
-                    pcall(function() mesh_comp:call("setMesh", holder) end)
-                    pcall(function() mesh_comp:call("set_Mesh", holder) end)
-                    pcall(function() mesh_comp:set_field("Enabled", true) end)
-                end
-            end)
-        end
+    local mesh_comp = add_component(child_obj, "via.render.Mesh")
+    if mesh_comp then
+        pcall(function()
+            local res = sdk.create_resource("via.render.MeshResource", mesh_path)
+            if res then
+                res = res:add_ref()
+                local holder = res:create_holder("via.render.MeshResourceHolder"):add_ref()
+                pcall(function() mesh_comp:call("setMesh", holder) end)
+                pcall(function() mesh_comp:call("set_Mesh", holder) end)
+                pcall(function() mesh_comp:set_field("Enabled", true) end)
+            end
+        end)
     end
 
     table.insert(spawner.child_objects, child_obj)
@@ -338,11 +343,99 @@ function spawner.get_target_companion_candidates(master_player)
 
     if is_claire_leader then
         log_msg("Active leader identified as Claire (pl1000). Target companion: Leon (pl0000).")
-        return LEON_PREFAB_CANDIDATES, "Leon (pl0000)"
+        return LEON_PREFAB_CANDIDATES, "Leon (pl0000)", true
     else
         log_msg("Active leader identified as Leon (pl0000). Target companion: Claire (pl1000).")
-        return CLAIRE_PREFAB_CANDIDATES, "Claire (pl1000)"
+        return CLAIRE_PREFAB_CANDIDATES, "Claire (pl1000)", false
     end
+end
+
+-- Primary Recommended Spawner: Character Duplication (Cloning the active player entity)
+function spawner.spawn_by_duplication(master_player, spawn_pos, is_claire_leader)
+    local player_go = spawner.get_player_game_object(master_player)
+    if not player_go then
+        log_msg("Duplication failed: Player GameObject not resolved.")
+        return nil
+    end
+
+    local scene_man = sdk.get_native_singleton("via.SceneManager")
+    local cur_scene = scene_man and scene_man:call("get_CurrentScene")
+    if not cur_scene then
+        log_msg("Duplication failed: via.Scene not available.")
+        return nil
+    end
+
+    log_msg("Attempting character duplication via via.Scene.duplicateGameObject...")
+    local clone = nil
+    local ok = pcall(function()
+        clone = cur_scene:call("duplicateGameObject(via.GameObject)", player_go)
+    end)
+    if not ok or not clone then
+        pcall(function()
+            clone = cur_scene:call("duplicateGameObject", player_go)
+        end)
+    end
+
+    if not clone then
+        log_msg("duplicateGameObject returned nil, checking fallbacks.")
+        return nil
+    end
+
+    clone:add_ref()
+
+    -- Set clone position
+    pcall(function()
+        local tf = clone:call("get_Transform")
+        if tf then
+            tf:call("set_Position", spawn_pos)
+            log_msg(string.format("Clone repositioned to (%.2f, %.2f, %.2f)", spawn_pos.x, spawn_pos.y, spawn_pos.z))
+        end
+    end)
+
+    -- Strip player hardware inputs
+    spawner.strip_input_components(clone)
+
+    -- Attempt character/costume swap: 0 = Leon (PL0000), 1 = Claire (PL1000)
+    local target_id = is_claire_leader and 0 or 1
+    pcall(function()
+        local survivor_man = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
+        if survivor_man then
+            local changed = false
+            pcall(function()
+                survivor_man:call("requestCostumeChange", clone, target_id)
+                changed = true
+            end)
+            if not changed then
+                pcall(function() survivor_man:call("changeCostume", clone, target_id) end)
+            end
+            log_msg("Requested SurvivorManager costume change: ID " .. tostring(target_id))
+        end
+    end)
+
+    -- If Claire is target companion, bind Claire's mesh resource to the rigged clone
+    if not is_claire_leader then
+        pcall(function()
+            local clone_mesh = utils.get_component(clone, "via.render.Mesh")
+            if clone_mesh then
+                for _, path in ipairs(CLAIRE_MESH_CANDIDATES) do
+                    local res = sdk.create_resource("via.render.MeshResource", path)
+                    if res then
+                        res = res:add_ref()
+                        local h = res:create_holder("via.render.MeshResourceHolder")
+                        if h then
+                            h = h:add_ref()
+                            clone_mesh:call("setMesh", h)
+                            clone_mesh:call("set_DrawMesh", true)
+                            log_msg("Bound Claire mesh to rigged clone: " .. path)
+                            break
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    return clone, "Character Duplication (Cloned & Rigged)"
 end
 
 -- Primary spawning implementation
@@ -371,32 +464,37 @@ function spawner.spawn_companion()
     local spawn_x = leader_pos.x + 1.5
     local spawn_y = leader_pos.y
     local spawn_z = leader_pos.z - 1.5
-    local spawn_pos = (Vector3f and Vector3f.new(spawn_x, spawn_y, spawn_z)) or { x = spawn_x, y = spawn_y, z = spawn_z }
+    local spawn_pos = (Vector3f and Vector3f.new and Vector3f.new(spawn_x, spawn_y, spawn_z)) or { x = spawn_x, y = spawn_y, z = spawn_z }
 
-    local candidates, target_name = spawner.get_target_companion_candidates(master_player)
+    local candidates, target_name, is_claire_leader = spawner.get_target_companion_candidates(master_player)
     log_msg(string.format("Attempting to spawn %s at (%.2f, %.2f, %.2f)...", target_name, spawn_x, spawn_y, spawn_z))
 
     local spawned_obj = nil
     local successful_path = nil
 
-    -- 1. Try via.Prefab instantiation across candidate paths
-    for _, path in ipairs(candidates) do
-        local ok_pfb, err_pfb = pcall(function()
-            local pfb = sdk.create_instance("via.Prefab"):add_ref()
-            if pfb then
-                if pfb.set_Path then pfb:set_Path(path) else pfb:set_field("Path", path) end
-                if pfb.set_Standby then pfb:set_Standby(true) else pfb:set_field("Standby", true) end
-                local obj = pfb:call("instantiate(via.vec3)", spawn_pos)
-                if obj then
-                    spawned_obj = obj
-                    successful_path = path
+    -- 1. Primary Strategy: Character Duplication (Cloning active player entity)
+    spawned_obj, successful_path = spawner.spawn_by_duplication(master_player, spawn_pos, is_claire_leader)
+
+    -- 2. Fallback: via.Prefab instantiation across candidate paths
+    if not spawned_obj then
+        for _, path in ipairs(candidates) do
+            pcall(function()
+                local pfb = sdk.create_instance("via.Prefab"):add_ref()
+                if pfb then
+                    if pfb.set_Path then pfb:set_Path(path) else pfb:set_field("Path", path) end
+                    if pfb.set_Standby then pfb:set_Standby(true) else pfb:set_field("Standby", true) end
+                    local obj = pfb:call("instantiate(via.vec3)", spawn_pos)
+                    if obj then
+                        spawned_obj = obj
+                        successful_path = path
+                    end
                 end
-            end
-        end)
-        if spawned_obj then break end
+            end)
+            if spawned_obj then break end
+        end
     end
 
-    -- 2. Fallback: via.SceneManager:get_CurrentScene():instantiate
+    -- 3. Fallback: via.SceneManager:get_CurrentScene():instantiate
     if not spawned_obj then
         pcall(function()
             local scene_man = sdk.get_native_singleton("via.SceneManager")
@@ -419,7 +517,7 @@ function spawner.spawn_companion()
         end)
     end
 
-    -- 3. Option 1 Component Assembly: Create GameObject and attach Mesh, Motion, and CharacterController
+    -- 4. Option 1 Component Assembly Fallback: Create GameObject and attach Mesh, Motion, and CharacterController
     if not spawned_obj then
         pcall(function()
             local go_td = sdk.find_type_definition("via.GameObject")
@@ -429,24 +527,20 @@ function spawner.spawn_companion()
                     local new_obj = create_method:call(nil, "DuoMode_ClaireCompanion")
                     if new_obj then
                         new_obj:add_ref()
-                        new_obj:call(".ctor")
+                        pcall(function() new_obj:call(".ctor") end)
                         local tf = new_obj:call("get_Transform")
                         if tf then tf:call("set_Position", spawn_pos) end
 
                         -- Option 1 Component Assembly Pipeline:
-                        -- A. CharacterController
                         local cc_comp = add_component(new_obj, "via.physics.CharacterController")
                         spawner.bind_character_controller(cc_comp, master_player)
 
-                        -- B. Motion (locomotion blend trees)
                         local motion_comp = add_component(new_obj, "via.motion.Motion")
                         spawner.bind_motion_resource(motion_comp, master_player)
 
-                        -- C. Mesh (3D geometry and materials)
                         local mesh_comp = add_component(new_obj, "via.render.Mesh")
                         local mesh_ok, bound_path = spawner.bind_mesh_resource(mesh_comp, master_player)
 
-                        -- D. Modular sub-parts: Face & Hair child objects
                         pcall(function()
                             spawner.attach_child_mesh(new_obj, "Claire_Face", "natives/x64/sectionroot/character/player/pl1000/pl1050/pl1050.mesh")
                             spawner.attach_child_mesh(new_obj, "Claire_Hair", "natives/x64/sectionroot/character/player/pl1000/pl1070/pl1070.mesh")
@@ -489,13 +583,11 @@ end
 function spawner.despawn_companion()
     if spawner.companion_game_object then
         log_msg("Despawning companion entity...")
-        pcall(function()
-            spawner.companion_game_object:call("destroy")
-        end)
+        utils.destroy_game_object(spawner.companion_game_object)
     end
 
     for _, child in ipairs(spawner.child_objects) do
-        pcall(function() child:call("destroy") end)
+        utils.destroy_game_object(child)
     end
     spawner.child_objects = {}
 

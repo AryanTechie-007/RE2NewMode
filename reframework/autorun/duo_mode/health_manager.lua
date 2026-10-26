@@ -6,6 +6,7 @@
 
 local config = require("duo_mode/config")
 local fsm = require("duo_mode/fsm")
+local utils = require("duo_mode/utils")
 
 local health_manager = {}
 health_manager.current_hp = config.companion_max_hp
@@ -87,7 +88,7 @@ function health_manager.update(companion_obj, leader_obj, delta_time)
 
         -- Freeze normalized animation time in MotionFsm2 so companion stays kneeling
         pcall(function()
-            local motion = companion_obj:call("getComponent(System.Type)", sdk.find_type_definition("via.motion.Motion"))
+            local motion = utils.get_component(companion_obj, "via.motion.Motion")
             if motion then
                 -- Clamp playback speed to zero or hold pose
             end
