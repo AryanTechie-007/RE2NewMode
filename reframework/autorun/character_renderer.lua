@@ -557,6 +557,9 @@ function spawner.execute_despawn()
         end
     end)
     spawner.spawned_entities = {}
+    spawner.spawned_body = nil
+    spawner.spawned_head = nil
+    spawner.spawned_hair = nil
     spawner.body_pfb = nil
     spawner.head_pfb = nil
     spawner.hair_pfb = nil
@@ -633,6 +636,52 @@ end
 
 spawner.layer_logged = false
 
+-- Link Player's Survivor Motion Bank & Motion clip to Claire
+local function link_and_play_motion(body_obj)
+    local player = spawner.get_master_player()
+    local player_go = spawner.get_player_game_object(player)
+    if not player_go or not body_obj then return end
+
+    pcall(function()
+        local c_motion = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+        local p_motion = player_go:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+        if not c_motion or not p_motion then return end
+
+        local p_asset = nil
+        pcall(function() p_asset = p_motion:call("get_MotionBankAsset") end)
+        local c_asset = nil
+        pcall(function() c_asset = c_motion:call("get_MotionBankAsset") end)
+
+        log_debug("MotionBank Status: PlayerAsset=" .. tostring(p_asset) .. ", ClaireAsset=" .. tostring(c_asset))
+
+        -- If Claire doesn't have a motion bank asset, borrow the player's active survivor motion bank
+        if not c_asset and p_asset then
+            c_motion:call("set_MotionBankAsset", p_asset)
+            pcall(function() c_motion:call("setupMotionBank") end)
+            log_debug("Assigned Player MotionBankAsset to Claire Motion.")
+        end
+
+        local p_l0 = p_motion:call("getLayer", 0)
+        local c_l0 = c_motion:call("getLayer", 0)
+
+        if p_l0 and c_l0 then
+            local p_bid = p_l0:call("get_MotionBankID") or 0
+            local p_mid = p_l0:call("get_MotionID") or 0
+            log_debug(string.format("Player Layer 0: BankID=%s, MotionID=%s", tostring(p_bid), tostring(p_mid)))
+
+            -- Assign motion to Claire's Layer 0
+            local ok_c = pcall(function()
+                c_l0:call("changeMotion(System.UInt32, System.UInt32)", p_bid, p_mid)
+            end)
+            if not ok_c then
+                pcall(function() c_l0:call("changeMotion", p_bid, p_mid) end)
+            end
+            pcall(function() c_l0:call("set_Speed", 1.0) end)
+            log_debug(string.format("Attempted changeMotion on Claire with BankID=%s, MotionID=%s (Result: %s)", tostring(p_bid), tostring(p_mid), tostring(ok_c)))
+        end
+    end)
+end
+
 -- Update companion animation layer based on locomotion speed
 local function update_companion_animation(body_obj, current_speed)
     if not body_obj then return end
@@ -647,29 +696,10 @@ local function update_companion_animation(body_obj, current_speed)
         local layer0 = motion:call("getLayer", 0)
         if not layer0 then return end
 
-        -- Log layer0 info once on spawn to reveal animation setup
-        if not spawner.layer_logged then
-            spawner.layer_logged = true
-            local mid = nil
-            local bid = nil
-            local spd = nil
-            pcall(function() mid = layer0:call("get_MotionID") end)
-            pcall(function() bid = layer0:call("get_BankID") end)
-            pcall(function() spd = layer0:call("get_Speed") end)
-            log_debug(string.format("Claire Layer0 Animation: BankID=%s, MotionID=%s, Speed=%s", tostring(bid), tostring(mid), tostring(spd)))
-
-            -- Dump TreeLayer methods to discover all animation controls
-            pcall(function()
-                local td_l = layer0:get_type_definition()
-                local l_methods = td_l:get_methods()
-                log_debug("--- via.motion.TreeLayer Methods ---")
-                for _, lm in ipairs(l_methods) do
-                    local lmname = lm:get_name()
-                    if string.find(string.lower(lmname), "speed") or string.find(string.lower(lmname), "motion") or string.find(string.lower(lmname), "frame") or string.find(string.lower(lmname), "play") or string.find(string.lower(lmname), "state") then
-                        log_debug("  TreeLayer: " .. lmname .. " (" .. tostring(lm:get_num_params()) .. " params)")
-                    end
-                end
-            end)
+        -- If MotionID is still unassigned (-1), link and assign motion
+        local cur_mid = layer0:call("get_MotionID") or 4294967295
+        if cur_mid == 4294967295 or cur_mid == -1 then
+            link_and_play_motion(body_obj)
         end
 
         -- If moving, set walking/jogging animation speed; if idle, keep idle pace
@@ -684,7 +714,6 @@ local function update_companion_animation(body_obj, current_speed)
 
         pcall(function() layer0:call("set_Speed", target_anim_speed) end)
         pcall(function() layer0:call("set_SpeedRate", target_anim_speed) end)
-        pcall(function() layer0:call("setSpeed", target_anim_speed) end)
     end)
 end
 
@@ -855,145 +884,94 @@ re.on_frame(function()
         local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
         local vpos = (Vector3f and Vector3f.new and Vector3f.new(front_pos.x, front_pos.y, front_pos.z)) or front_pos
 
-        -- Attempt instantiation of Body on every frame
-        local body_obj = nil
-        local ok_b = pcall(function()
-            body_obj = spawner.body_pfb:call("instantiate(via.vec3)", vpos)
-        end)
+        -- 1. Instantiate Body if not yet done
+        if not spawner.spawned_body and spawner.body_pfb then
+            local body_obj = nil
+            pcall(function() body_obj = spawner.body_pfb:call("instantiate(via.vec3)", vpos) end)
+            if body_obj then
+                pcall(function() body_obj:add_ref() end)
+                local b_tf = nil
+                pcall(function() b_tf = body_obj:call("get_Transform") end)
+                if b_tf then
+                    pcall(function() b_tf:call("set_Position", front_pos) end)
+                end
+                pcall(function()
+                    body_obj:call("set_DrawSelf", true)
+                    body_obj:call("set_UpdateSelf", true)
+                end)
+                table.insert(spawner.spawned_entities, body_obj)
+                spawner.spawned_body = body_obj
+                log_debug(string.format("Body instantiated at frame %d at (%.2f, %.2f, %.2f)", spawner.stream_frames, front_pos.x, front_pos.y, front_pos.z))
 
-        if ok_b and body_obj then
-            pcall(function() body_obj:add_ref() end)
-            local b_tf = nil
-            pcall(function() b_tf = body_obj:call("get_Transform") end)
-            if b_tf then
-                pcall(function() b_tf:call("set_Position", front_pos) end)
+                -- Set initial facing direction to face Leon directly
+                if player_tf and b_tf then
+                    local leon_yaw = get_yaw_from_transform(player_tf)
+                    spawner.comp_yaw = leon_yaw + math.pi
+                    rotate_transform_safely(b_tf, body_obj, spawner.comp_yaw)
+                end
+
+                -- Attempt immediate motion link
+                link_and_play_motion(body_obj)
             end
-            pcall(function()
-                body_obj:call("set_DrawSelf", true)
-                body_obj:call("set_UpdateSelf", true)
-            end)
-            table.insert(spawner.spawned_entities, body_obj)
-            log_debug(string.format("Body instantiated at frame %d at (%.2f, %.2f, %.2f)", spawner.stream_frames, front_pos.x, front_pos.y, front_pos.z))
+        end
 
-            -- Inspect components on Claire's body_obj to identify Motion/Animation controllers
-            pcall(function()
-                local comps = body_obj:call("get_Components"):get_elements()
-                if comps then
-                    log_debug("Claire Body Components (" .. tostring(#comps) .. " total):")
-                    for i, c in ipairs(comps) do
-                        local cname = "unknown"
-                        pcall(function() cname = c:get_type_definition():get_full_name() end)
-                        log_debug("  [" .. i .. "] " .. cname)
-                    end
-                end
+        local b_obj = spawner.spawned_body
+        local b_tf = b_obj and b_obj:call("get_Transform")
 
-                -- Dump MotionFsm2 methods and variables
-                local mfsm = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2"))
-                if mfsm then
-                    log_debug("--- via.motion.MotionFsm2 Methods ---")
-                    local td = mfsm:get_type_definition()
-                    local methods = td:get_methods()
-                    for _, m in ipairs(methods) do
-                        local mname = m:get_name()
-                        if string.find(string.lower(mname), "var") or string.find(string.lower(mname), "state") or string.find(string.lower(mname), "play") or string.find(string.lower(mname), "speed") or string.find(string.lower(mname), "set") then
-                            log_debug("  MFSM Method: " .. mname .. " (" .. tostring(m:get_num_params()) .. " params)")
-                        end
-                    end
-
-                    -- Check if MotionFsm2 has a current state or layer
-                    local state = nil
-                    pcall(function() state = mfsm:call("getCurrentState") or mfsm:call("get_CurrentState") end)
-                    log_debug("  MFSM CurrentState: " .. tostring(state))
-                end
-
-                -- Dump via.motion.Motion
-                local motion = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
-                if motion then
-                    log_debug("--- via.motion.Motion Methods ---")
-                    local td_m = motion:get_type_definition()
-                    local methods_m = td_m:get_methods()
-                    for _, m in ipairs(methods_m) do
-                        local mname = m:get_name()
-                        if string.find(string.lower(mname), "speed") or string.find(string.lower(mname), "play") or string.find(string.lower(mname), "layer") or string.find(string.lower(mname), "change") or string.find(string.lower(mname), "bank") then
-                            log_debug("  Motion Method: " .. mname .. " (" .. tostring(m:get_num_params()) .. " params)")
-                        end
-                    end
-                end
-            end)
-
-            -- Set initial facing direction to face Leon directly
-            if player_tf and b_tf then
-                local leon_yaw = get_yaw_from_transform(player_tf)
-                spawner.comp_yaw = leon_yaw + math.pi
-                rotate_transform_safely(b_tf, body_obj, spawner.comp_yaw)
+        -- 2. Instantiate Head if not yet done
+        if b_obj and not spawner.spawned_head and spawner.head_pfb then
+            local head_obj = nil
+            pcall(function() head_obj = spawner.head_pfb:call("instantiate(via.vec3)", vpos) end)
+            if head_obj then
+                pcall(function() head_obj:add_ref() end)
+                pcall(function()
+                    local h_tf = head_obj:call("get_Transform")
+                    if h_tf and b_tf then h_tf:call("set_Parent", b_tf) end
+                    head_obj:call("set_DrawSelf", true)
+                    head_obj:call("set_UpdateSelf", true)
+                end)
+                table.insert(spawner.spawned_entities, head_obj)
+                spawner.spawned_head = head_obj
+                log_debug(string.format("Head instantiated and attached to Body at frame %d.", spawner.stream_frames))
             end
+        end
 
-            -- If Full mode, instantiate and attach Head & Hair
-            if spawner.mode == "full" then
-                -- Head
-                if spawner.head_pfb then
-                    local head_obj = nil
-                    pcall(function() head_obj = spawner.head_pfb:call("instantiate(via.vec3)", vpos) end)
-                    if head_obj then
-                        pcall(function() head_obj:add_ref() end)
-                        pcall(function()
-                            local h_tf = head_obj:call("get_Transform")
-                            if h_tf and b_tf then
-                                h_tf:call("set_Parent", b_tf)
-                            end
-                            head_obj:call("set_DrawSelf", true)
-                            head_obj:call("set_UpdateSelf", true)
-                        end)
-                        table.insert(spawner.spawned_entities, head_obj)
-                        log_debug("Head instantiated and attached to Body.")
-                    else
-                        log_debug("Head instantiate returned nil at frame " .. tostring(spawner.stream_frames))
-                    end
-                end
-
-                -- Hair
-                if spawner.hair_pfb then
-                    local hair_obj = nil
-                    pcall(function() hair_obj = spawner.hair_pfb:call("instantiate(via.vec3)", vpos) end)
-                    if hair_obj then
-                        pcall(function() hair_obj:add_ref() end)
-                        pcall(function()
-                            local hr_tf = hair_obj:call("get_Transform")
-                            if hr_tf and b_tf then
-                                hr_tf:call("set_Parent", b_tf)
-                            end
-                            hair_obj:call("set_DrawSelf", true)
-                            hair_obj:call("set_UpdateSelf", true)
-                        end)
-                        table.insert(spawner.spawned_entities, hair_obj)
-                        log_debug("Hair instantiated and attached to Body.")
-                    else
-                        log_debug("Hair instantiate returned nil at frame " .. tostring(spawner.stream_frames))
-                    end
-                end
+        -- 3. Instantiate Hair if not yet done (retries across frames so hair is never missed!)
+        if b_obj and not spawner.spawned_hair and spawner.hair_pfb then
+            local hair_obj = nil
+            pcall(function() hair_obj = spawner.hair_pfb:call("instantiate(via.vec3)", vpos) end)
+            if hair_obj then
+                pcall(function() hair_obj:add_ref() end)
+                pcall(function()
+                    local hr_tf = hair_obj:call("get_Transform")
+                    if hr_tf and b_tf then hr_tf:call("set_Parent", b_tf) end
+                    hair_obj:call("set_DrawSelf", true)
+                    hair_obj:call("set_UpdateSelf", true)
+                end)
+                table.insert(spawner.spawned_entities, hair_obj)
+                spawner.spawned_hair = hair_obj
+                log_debug(string.format("Hair instantiated and attached to Body at frame %d.", spawner.stream_frames))
             end
+        end
 
-            local total_parts = #spawner.spawned_entities
-            if total_parts >= 3 then
-                spawner.last_status = "SUCCESS: CLAIRE FULLY RENDERED (Body + Head + Hair)!"
-            else
-                spawner.last_status = "SUCCESS: CLAIRE RENDERED IN VIEWPORT!"
-            end
-            log_debug(string.format("Spawn completed! Total parts active: %d", total_parts))
-
+        -- 4. Check completion
+        local all_done = spawner.spawned_body and (spawner.mode ~= "full" or (spawner.spawned_head and spawner.spawned_hair))
+        if all_done then
+            spawner.last_status = "SUCCESS: CLAIRE FULLY RENDERED (Body + Head + Hair)!"
+            log_debug(string.format("Spawn completed! Total parts active: %d", #spawner.spawned_entities))
             spawner.streaming = false
             spawner.body_pfb = nil
             spawner.head_pfb = nil
             spawner.hair_pfb = nil
         else
-            spawner.last_status = string.format("Streaming assets... (Frame %d/300)", spawner.stream_frames)
+            spawner.last_status = string.format("Streaming assets... (Frame %d/300, active parts %d/3)", spawner.stream_frames, #spawner.spawned_entities)
             if spawner.stream_frames > 300 then
                 spawner.streaming = false
                 spawner.body_pfb = nil
                 spawner.head_pfb = nil
                 spawner.hair_pfb = nil
-                spawner.last_status = "Streaming timed out at frame 300"
-                log_debug("Streaming timed out at frame 300.")
+                spawner.last_status = "Streaming timed out. Active parts: " .. tostring(#spawner.spawned_entities)
+                log_debug(spawner.last_status)
             end
         end
     end
