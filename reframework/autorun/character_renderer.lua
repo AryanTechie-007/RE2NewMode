@@ -1,7 +1,7 @@
 --[[
     Resident Evil 2: Duo Mode — Claire Redfield Spawner & Companion Locomotion
     Script: character_renderer.lua
-    Purpose: Single unified script that spawns Claire in the 3D viewport and drives smooth companion gliding.
+    Purpose: Single unified script that renders Claire Redfield in 3D and provides smooth gliding companion locomotion.
     Author: AryanTechie-007
 ]]
 
@@ -47,20 +47,24 @@ spawner.stream_frames = 0
 spawner.mode = "full"
 
 -- Locomotion Configuration & State (Single-Script Architecture)
-spawner.follow_enabled = false -- Starts OFF so Claire stays right in front of Leon in full view!
+spawner.follow_enabled = false
 spawner.current_speed = 0.0
 spawner.comp_yaw = 0.0
 spawner.dist_to_leon = 0.0
 spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
 spawner.last_time = nil
+spawner.follow_distance = 1.4 -- 1.4m behind Leon
+spawner.follow_flank = -0.7    -- 0.7m to Leon's left flank (companion over-the-shoulder view)
 
 -- Follow Tuning Parameters
-local FOLLOW_DIST   = 1.6  -- Claire targets ~1.6m behind Leon
-local STOP_DIST     = 1.1  -- Stops when close to Leon
-local WALK_SPEED    = 2.0  -- Walking gliding speed (m/s)
-local RUN_SPEED     = 4.2  -- Running catch-up speed (m/s)
-local RUN_THRESHOLD = 3.2  -- Catch up when Leon is > 3.2m away
-local TELEPORT_DIST = 20.0 -- Snap if separated by cutscene or elevator
+local STOP_DIST     = 0.35 -- Arrival tolerance at target waypoint
+local WALK_SPEED    = 2.2  -- Walking gliding speed (m/s)
+local RUN_SPEED     = 4.5  -- Catch-up speed (m/s)
+local RUN_THRESHOLD = 2.6  -- Distance from target that triggers catch-up speed
+local TELEPORT_DIST = 25.0 -- Snap if separated by cutscene or elevator
+
+local rotation_initialized = false
+local rotation_method = nil
 
 local function log_debug(msg)
     pcall(function()
@@ -140,32 +144,37 @@ function spawner.scan_all_candidates()
 end
 
 -- =========================================================================
--- 2. Helper Math & Rotation Utilities
+-- 2. Helper Math & Safe Transform Utilities
 -- =========================================================================
 local function lerp(a, b, t)
-    return a + (b - a) * t
+    if not a or not b or a ~= a or b ~= b then return b or 0.0 end
+    return a + (b - a) * math.max(0.0, math.min(1.0, t))
 end
 
 local function lerp_angle(from_rad, to_rad, t)
+    if not from_rad or not to_rad or from_rad ~= from_rad or to_rad ~= to_rad then return to_rad or 0.0 end
     local diff = to_rad - from_rad
     while diff > math.pi do diff = diff - 2.0 * math.pi end
     while diff < -math.pi do diff = diff + 2.0 * math.pi end
-    return from_rad + diff * t
+    return from_rad + diff * math.max(0.0, math.min(1.0, t))
 end
 
 local function distance_2d(p1, p2)
+    if not p1 or not p2 or not p1.x or not p2.x or not p1.z or not p2.z then return 0.0 end
     local dx = p1.x - p2.x
     local dz = p1.z - p2.z
-    return math.sqrt(dx * dx + dz * dz)
+    local d = math.sqrt(dx * dx + dz * dz)
+    if d ~= d then return 0.0 end
+    return d
 end
 
 local function get_yaw_from_transform(tf)
     if not tf or not tf.call then return 0.0 end
     local ok1, euler = pcall(function() return tf:call("get_EulerAngles") end)
-    if ok1 and euler and euler.y then return euler.y end
+    if ok1 and euler and euler.y and euler.y == euler.y then return euler.y end
 
     local ok2, euler2 = pcall(function() return tf:call("get_EulerAngle") end)
-    if ok2 and euler2 and euler2.y then return euler2.y end
+    if ok2 and euler2 and euler2.y and euler2.y == euler2.y then return euler2.y end
 
     local ok3, rot = pcall(function() return tf:call("get_Rotation") end)
     if ok3 and rot then
@@ -175,13 +184,14 @@ local function get_yaw_from_transform(tf)
         local w = rot.w or 1.0
         local siny_cosp = 2.0 * (w * y + x * z)
         local cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-        return math.atan(siny_cosp, cosy_cosp)
+        local y_val = math.atan(siny_cosp, cosy_cosp)
+        if y_val == y_val then return y_val end
     end
     return 0.0
 end
 
 local function get_front_spawn_position(player_tf, dist)
-    dist = dist or 2.0 -- 2 meters directly IN FRONT of player
+    dist = dist or 2.0
     local fx, fy, fz = 0.0, 0.0, 0.0
     pcall(function()
         local pos = player_tf:call("get_Position")
@@ -193,25 +203,89 @@ local function get_front_spawn_position(player_tf, dist)
     return (Vector3f and Vector3f.new and Vector3f.new(fx, fy, fz)) or { x = fx, y = fy, z = fz }
 end
 
-local function move_transform_safely(tf, x, y, z)
-    if not tf then return end
-    -- Method A: via.vec3 native invocation
-    local ok1 = pcall(function()
-        local v = sdk.create_instance("via.vec3")
-        if v then
-            v:call("set_x", x)
-            v:call("set_y", y)
-            v:call("set_z", z)
-            tf:call("set_Position(via.vec3)", v)
-        end
-    end)
-    if ok1 then return end
+-- Safely translates transform without invalid marshalling or matrix corruption
+local function move_transform_safely(tf, game_obj, x, y, z)
+    if not x or not y or not z then return end
+    if x ~= x or y ~= y or z ~= z then return end -- Guard against IEEE 754 NaN
 
-    -- Method B: Vector3f call
-    pcall(function()
-        local vpos = (Vector3f and Vector3f.new and Vector3f.new(x, y, z)) or { x = x, y = y, z = z }
-        tf:call("set_Position", vpos)
-    end)
+    local v3 = (Vector3f and Vector3f.new and Vector3f.new(x, y, z))
+
+    -- Primary: via.Transform ManagedObject:set_Position(Vector3f)
+    if tf and v3 then
+        local ok1 = pcall(function() tf:call("set_Position", v3) end)
+        if not ok1 then
+            pcall(function() tf:call("set_Position(via.vec3)", v3) end)
+        end
+    end
+
+    -- Secondary: RETransform:set_position(Vector4f) if game_obj exposes get_transform
+    if game_obj and game_obj.get_transform and Vector4f and Vector4f.new then
+        pcall(function()
+            local retf = game_obj:get_transform()
+            if retf and retf.set_position then
+                retf:set_position(Vector4f.new(x, y, z, 1.0))
+            end
+        end)
+    end
+end
+
+-- Safely sets rotation without passing Lua tables to IL2CPP
+local function rotate_transform_safely(tf, game_obj, yaw_rad)
+    if not yaw_rad or yaw_rad ~= yaw_rad then return end -- Guard against NaN
+
+    -- 1. Try RETransform:set_rotation via REFramework Quaternion
+    if game_obj and game_obj.get_transform and Quaternion then
+        local ok1 = pcall(function()
+            local retf = game_obj:get_transform()
+            if retf and retf.set_rotation then
+                local half = yaw_rad * 0.5
+                local qy = math.sin(half)
+                local qw = math.cos(half)
+                if qy == qy and qw == qw then
+                    local q = nil
+                    pcall(function() q = Quaternion.new(0, qy, 0, qw) end)
+                    if not q and Vector3f and Vector3f.new then
+                        pcall(function() q = Quaternion.new(Vector3f.new(0, yaw_rad, 0)) end)
+                    end
+                    if q then
+                        retf:set_rotation(q)
+                        if not rotation_initialized then
+                            rotation_initialized = true
+                            rotation_method = "RETransform:set_rotation(Quaternion)"
+                            log_debug("Rotation mechanism: " .. rotation_method)
+                        end
+                        return true
+                    end
+                end
+            end
+            return false
+        end)
+        if ok1 then return end
+    end
+
+    -- 2. Try via.Transform EulerAngle / EulerAngles setters
+    if tf and Vector3f and Vector3f.new then
+        local ok2 = pcall(function()
+            local euler = Vector3f.new(0, yaw_rad, 0)
+            tf:call("set_EulerAngles", euler)
+            if not rotation_initialized then
+                rotation_initialized = true
+                rotation_method = "via.Transform:set_EulerAngles"
+                log_debug("Rotation mechanism: " .. rotation_method)
+            end
+        end)
+        if ok2 then return end
+
+        pcall(function()
+            local euler = Vector3f.new(0, yaw_rad, 0)
+            tf:call("set_EulerAngle", euler)
+            if not rotation_initialized then
+                rotation_initialized = true
+                rotation_method = "via.Transform:set_EulerAngle"
+                log_debug("Rotation mechanism: " .. rotation_method)
+            end
+        end)
+    end
 end
 
 -- =========================================================================
@@ -271,7 +345,10 @@ function spawner.execute_despawn()
     spawner.hair_pfb = nil
     spawner.streaming = false
     spawner.stream_frames = 0
+    spawner.follow_enabled = false
     spawner.current_speed = 0.0
+    spawner.dist_to_leon = 0.0
+    spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
     spawner.last_status = "Despawned - Standing by"
     log_debug("Despawn executed cleanly.")
 end
@@ -354,23 +431,47 @@ local function update_companion_locomotion(delta_time)
     pcall(function() comp_pos = body_tf:call("get_Position") end)
     if not leon_pos or not comp_pos then return end
 
+    -- NaN Auto-Recovery: if comp_pos became corrupted from a previous bug, recover cleanly
+    if comp_pos.x ~= comp_pos.x or comp_pos.y ~= comp_pos.y or comp_pos.z ~= comp_pos.z then
+        log_debug("WARNING: comp_pos was NaN. Auto-recovering Claire in front of Leon.")
+        local fp = get_front_spawn_position(player_tf, 2.0)
+        move_transform_safely(body_tf, body_obj, fp.x, fp.y, fp.z)
+        spawner.dist_to_leon = 2.0
+        return
+    end
+    if leon_pos.x ~= leon_pos.x or leon_pos.y ~= leon_pos.y or leon_pos.z ~= leon_pos.z then
+        return
+    end
+
     local leon_yaw = get_yaw_from_transform(player_tf)
     local dist_leon = distance_2d(leon_pos, comp_pos)
     spawner.dist_to_leon = dist_leon
 
-    -- Target: 1.6m behind Leon
-    local target_x = leon_pos.x - math.sin(leon_yaw) * FOLLOW_DIST
-    local target_z = leon_pos.z - math.cos(leon_yaw) * FOLLOW_DIST
+    -- Compute companion target waypoint:
+    -- follow_distance behind Leon, and follow_flank along Leon's side (over-the-shoulder view)
+    local follow_dist = spawner.follow_distance or 1.4
+    local flank_offset = spawner.follow_flank or -0.7
+
+    local fwd_x = math.sin(leon_yaw)
+    local fwd_z = math.cos(leon_yaw)
+    local right_x = math.cos(leon_yaw)
+    local right_z = -math.sin(leon_yaw)
+
+    local target_x = leon_pos.x - fwd_x * follow_dist + right_x * flank_offset
+    local target_z = leon_pos.z - fwd_z * follow_dist + right_z * flank_offset
     local target_y = leon_pos.y
 
     local dx = target_x - comp_pos.x
     local dz = target_z - comp_pos.z
     local dist_target = math.sqrt(dx * dx + dz * dz)
+    if dist_target ~= dist_target then dist_target = 0.0 end
 
-    -- Catch-up teleport if Leon runs far ahead
+    -- Catch-up teleport if Leon runs far ahead (e.g. cutscene / elevator)
     if dist_leon > TELEPORT_DIST then
-        move_transform_safely(body_tf, target_x, target_y, target_z)
+        move_transform_safely(body_tf, body_obj, target_x, target_y, target_z)
         spawner.current_speed = 0.0
+        spawner.comp_yaw = leon_yaw
+        rotate_transform_safely(body_tf, body_obj, spawner.comp_yaw)
         spawner.loco_status = "Catch-up Teleported"
         return
     end
@@ -378,35 +479,31 @@ local function update_companion_locomotion(delta_time)
     local target_speed = 0.0
     local target_yaw = spawner.comp_yaw
 
-    if dist_target < STOP_DIST or dist_leon < 1.2 then
+    if dist_target < STOP_DIST or dist_leon < 1.0 then
         target_speed = 0.0
-        target_yaw = leon_yaw
+        target_yaw = leon_yaw -- Face forward with Leon when idle
         spawner.loco_status = string.format("Idle Alongside Leon (%.2fm)", dist_leon)
     elseif dist_target >= RUN_THRESHOLD then
         target_speed = RUN_SPEED
-        target_yaw = math.atan(dx, dz)
+        target_yaw = math.atan(dx, dz) -- Face gliding direction
         spawner.loco_status = string.format("Gliding to Catch Up (%.2fm)", dist_leon)
     else
         target_speed = WALK_SPEED
-        target_yaw = math.atan(dx, dz)
+        target_yaw = math.atan(dx, dz) -- Face gliding direction
         spawner.loco_status = string.format("Gliding with Leon (%.2fm)", dist_leon)
     end
 
     spawner.current_speed = lerp(spawner.current_speed, target_speed, math.min(1.0, 5.0 * delta_time))
     spawner.comp_yaw = lerp_angle(spawner.comp_yaw, target_yaw, math.min(1.0, 6.0 * delta_time))
 
-    -- Smooth facing rotation
-    pcall(function()
-        local half = spawner.comp_yaw * 0.5
-        local qy = math.sin(half)
-        local qw = math.cos(half)
-        local rot = (Quaternion and Quaternion.new and Quaternion.new(0, qy, 0, qw)) or { x = 0, y = qy, z = 0, w = qw }
-        body_tf:call("set_Rotation", rot)
-    end)
+    -- Safe Rotation
+    rotate_transform_safely(body_tf, body_obj, spawner.comp_yaw)
 
-    -- Smooth gliding translation
-    if spawner.current_speed > 0.05 and dist_target > 0.1 then
+    -- Smooth Gliding Translation
+    if spawner.current_speed > 0.05 and dist_target > 0.05 then
         local move_dist = spawner.current_speed * delta_time
+        if move_dist > dist_target then move_dist = dist_target end -- Prevent overshooting
+
         local nx = dx / (dist_target > 0.001 and dist_target or 1.0)
         local nz = dz / (dist_target > 0.001 and dist_target or 1.0)
 
@@ -414,7 +511,9 @@ local function update_companion_locomotion(delta_time)
         local new_z = comp_pos.z + nz * move_dist
         local new_y = lerp(comp_pos.y, target_y, math.min(1.0, 8.0 * delta_time))
 
-        move_transform_safely(body_tf, new_x, new_y, new_z)
+        if new_x == new_x and new_y == new_y and new_z == new_z then
+            move_transform_safely(body_tf, body_obj, new_x, new_y, new_z)
+        end
     end
 end
 
@@ -456,6 +555,13 @@ re.on_frame(function()
             end)
             table.insert(spawner.spawned_entities, body_obj)
             log_debug(string.format("Body instantiated at frame %d at (%.2f, %.2f, %.2f)", spawner.stream_frames, front_pos.x, front_pos.y, front_pos.z))
+
+            -- Set initial facing direction to face Leon directly
+            if player_tf and b_tf then
+                local leon_yaw = get_yaw_from_transform(player_tf)
+                spawner.comp_yaw = leon_yaw + math.pi
+                rotate_transform_safely(b_tf, body_obj, spawner.comp_yaw)
+            end
 
             -- If Full mode, instantiate and attach Head & Hair
             if spawner.mode == "full" then
@@ -550,6 +656,9 @@ local function draw_spawner_ui(suffix)
         imgui.text_colored("Claire: ACTIVE IN VIEWPORT (3D Model Rendered)", 0.2, 1.0, 0.4, 1.0)
         imgui.text("Locomotion: " .. tostring(spawner.loco_status))
         imgui.text(string.format("Distance to Leon: %.2f m | Speed: %.1f m/s", spawner.dist_to_leon, spawner.current_speed))
+        if rotation_method then
+            imgui.text_colored("Rotation Engine: " .. rotation_method, 0.6, 0.8, 1.0, 1.0)
+        end
     else
         imgui.text_colored("Claire: NOT SPAWNED", 1.0, 0.6, 0.2, 1.0)
     end
@@ -592,12 +701,28 @@ local function draw_spawner_ui(suffix)
                 local b_tf = body_obj:call("get_Transform")
                 local fp = get_front_spawn_position(player_tf, 2.0)
                 if b_tf and fp then
-                    move_transform_safely(b_tf, fp.x, fp.y, fp.z)
+                    move_transform_safely(b_tf, body_obj, fp.x, fp.y, fp.z)
                     spawner.follow_enabled = false
+                    spawner.comp_yaw = get_yaw_from_transform(player_tf) + math.pi
+                    rotate_transform_safely(b_tf, body_obj, spawner.comp_yaw)
                     log_debug("Claire brought in front of Leon.")
                 end
             end
         end
+
+        imgui.spacing()
+        imgui.text("Follow Positioning Options:")
+        local flanks = { "Left Flank (-0.7m)", "Directly Behind (0.0m)", "Right Flank (+0.7m)" }
+        local current_flank_idx = (spawner.follow_flank == 0.0 and 2) or (spawner.follow_flank > 0 and 3) or 1
+        local changed_f, new_f_idx = imgui.combo("Position##flank" .. suffix, current_flank_idx, flanks)
+        if changed_f then
+            if new_f_idx == 1 then spawner.follow_flank = -0.7
+            elseif new_f_idx == 2 then spawner.follow_flank = 0.0
+            else spawner.follow_flank = 0.7 end
+        end
+
+        local changed_d, new_d = imgui.slider_float("Follow Distance##dist" .. suffix, spawner.follow_distance, 1.0, 3.5, "%.1f m")
+        if changed_d then spawner.follow_distance = new_d end
 
         imgui.spacing()
         if imgui.button("Despawn Claire##btn_desp" .. suffix) then
