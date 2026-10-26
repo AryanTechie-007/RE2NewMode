@@ -485,17 +485,16 @@ function renderer.execute_sam_scene_in(mode)
     add_diag("==================================================")
 end
 
--- Direct via.Prefab Spawning (Bypasses story locks and instantiates Claire's mesh directly)
+-- Direct via.Prefab Spawning (Bypasses story locks and asynchronously streams mesh)
+renderer.loading_prefab = nil
+renderer.loading_prefab_path = ""
+renderer.loading_frames = 0
+
 function renderer.execute_direct_prefab_spawn(prefab_path)
     renderer.execute_despawn()
-    prefab_path = prefab_path or "natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb"
+    prefab_path = prefab_path or "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb"
     add_diag("==================================================")
-    add_diag("Direct via.Prefab Spawner: Loading " .. prefab_path)
-
-    local player = renderer.get_master_player()
-    local player_go = renderer.get_player_game_object(player)
-    local player_tf = player_go and player_go:call("get_Transform")
-    local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
+    add_diag("Requesting via.Prefab Streaming: " .. prefab_path)
 
     local pfb = nil
     local ok_c = pcall(function()
@@ -507,49 +506,78 @@ function renderer.execute_direct_prefab_spawn(prefab_path)
         return
     end
 
-    pcall(function() pfb:set_field("Path", prefab_path) end)
     pcall(function() pfb:call("set_Path", prefab_path) end)
-    pcall(function() pfb:set_field("Standby", true) end)
     pcall(function() pfb:call("set_Standby", true) end)
 
-    add_diag("Configured via.Prefab Path. Instantiating in scene...")
+    local is_exist = nil
+    local ok_e = pcall(function() is_exist = pfb:call("get_Exist") end)
+    local is_ready = nil
+    local ok_r = pcall(function() is_ready = pfb:call("get_Ready") end)
 
-    local spawned = nil
-    local ok_inst = pcall(function()
-        local vpos = (Vector3f and Vector3f.new and Vector3f.new(front_pos.x, front_pos.y, front_pos.z)) or front_pos
-        spawned = pfb:call("instantiate(via.vec3)", vpos)
-    end)
+    add_diag(string.format("Prefab handle queued: Exist=%s, Ready=%s", tostring(is_exist), tostring(is_ready)))
 
-    if not ok_inst or not spawned then
-        pcall(function()
-            spawned = pfb:call("instantiate")
-        end)
+    if ok_e and is_exist == false then
+        add_diag("WARNING: get_Exist is FALSE. The path was not found in archive index.")
+        renderer.last_status = "Path not found: " .. prefab_path
+        return
     end
 
-    if spawned then
-        pcall(function() spawned:add_ref() end)
-        add_diag("SUCCESS: via.Prefab instantiated! Entity: " .. tostring(spawned))
-        local sp_tf = spawned.call and spawned:call("get_Transform")
-        if sp_tf then
-            pcall(function() sp_tf:call("set_Position", front_pos) end)
-        end
-        pcall(function()
-            spawned:call("set_DrawSelf", true)
-            spawned:call("set_UpdateSelf", true)
-        end)
-        renderer.spawned_entity = spawned
-        renderer.last_status = "DIRECT PREFAB INSTANTIATED IN VIEWPORT!"
-    else
-        add_diag("via.Prefab instantiate returned nil. Resource may need warming.")
-        renderer.last_status = "Prefab instantiate returned nil"
-    end
-    add_diag("==================================================")
+    renderer.loading_prefab = pfb
+    renderer.loading_prefab_path = prefab_path
+    renderer.loading_frames = 0
+    renderer.last_status = "Streaming " .. prefab_path .. " from disk..."
 end
 
 -- =========================================================================
 -- 5. Master Logic Loop (re.on_frame) — Thread-safe execution
 -- =========================================================================
 re.on_frame(function()
+    -- Asynchronous Prefab Loader Tick
+    if renderer.loading_prefab then
+        renderer.loading_frames = renderer.loading_frames + 1
+        local pfb = renderer.loading_prefab
+        local is_ready = false
+        pcall(function() is_ready = pfb:call("get_Ready") end)
+
+        if is_ready then
+            add_diag(string.format("Prefab READY after %d frames! Instantiating into viewport...", renderer.loading_frames))
+            local player = renderer.get_master_player()
+            local player_go = renderer.get_player_game_object(player)
+            local player_tf = player_go and player_go:call("get_Transform")
+            local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
+            local vpos = (Vector3f and Vector3f.new and Vector3f.new(front_pos.x, front_pos.y, front_pos.z)) or front_pos
+
+            local spawned = nil
+            local ok_spawn = pcall(function()
+                spawned = pfb:call("instantiate(via.vec3)", vpos)
+            end)
+
+            if ok_spawn and spawned then
+                pcall(function() spawned:add_ref() end)
+                local sp_tf = spawned.call and spawned:call("get_Transform")
+                if sp_tf then
+                    pcall(function() sp_tf:call("set_Position", front_pos) end)
+                end
+                pcall(function()
+                    spawned:call("set_DrawSelf", true)
+                    spawned:call("set_UpdateSelf", true)
+                end)
+                renderer.spawned_entity = spawned
+                renderer.last_status = "SUCCESS: CLAIRE RENDERED IN VIEWPORT!"
+                add_diag("SUCCESS: Claire physically instantiated into scene!")
+            else
+                add_diag("FAIL: instantiate returned nil or threw error: " .. tostring(spawned))
+                renderer.last_status = "Instantiation failed"
+            end
+            renderer.loading_prefab = nil
+        elseif renderer.loading_frames > 180 then
+            add_diag("TIMEOUT: Prefab failed to become ready after 180 frames.")
+            renderer.last_status = "Streaming timed out"
+            renderer.loading_prefab = nil
+        end
+    end
+
+    -- Action Queue
     if renderer.pending_action == "sam" then
         renderer.pending_action = nil
         pcall(renderer.execute_sam_transaction)
@@ -562,15 +590,18 @@ re.on_frame(function()
     elseif renderer.pending_action == "sam_scenein_player" then
         renderer.pending_action = nil
         pcall(function() renderer.execute_sam_scene_in("player") end)
-    elseif renderer.pending_action == "prefab_body_0" then
+    elseif renderer.pending_action == "prefab_body_0_clean" then
+        renderer.pending_action = nil
+        pcall(function() renderer.execute_direct_prefab_spawn("objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb") end)
+    elseif renderer.pending_action == "prefab_body_0_nat" then
         renderer.pending_action = nil
         pcall(function() renderer.execute_direct_prefab_spawn("natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb") end)
-    elseif renderer.pending_action == "prefab_body_1" then
+    elseif renderer.pending_action == "prefab_pl1000_clean" then
         renderer.pending_action = nil
-        pcall(function() renderer.execute_direct_prefab_spawn("natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_1.pfb") end)
-    elseif renderer.pending_action == "prefab_pl1000" then
+        pcall(function() renderer.execute_direct_prefab_spawn("objectroot/prefab/character/survivor/pl1000.pfb") end)
+    elseif renderer.pending_action == "prefab_leon_test" then
         renderer.pending_action = nil
-        pcall(function() renderer.execute_direct_prefab_spawn("natives/x64/objectroot/prefab/character/survivor/pl1000.pfb") end)
+        pcall(function() renderer.execute_direct_prefab_spawn("objectroot/prefab/character/survivor/parts/pl0000/pl0000_body_costume_0.pfb") end)
     elseif renderer.pending_action == "check_survivors" then
         renderer.pending_action = nil
         pcall(renderer.check_active_survivors)
@@ -600,21 +631,21 @@ re.on_draw_ui(function()
     end
 
     imgui.separator()
-    imgui.text_colored("--- Pathway 1: Direct via.Prefab Spawner (Bypasses Story Locks) ---", 0.2, 1.0, 0.4, 1.0)
-    if imgui.button("Spawn Claire Body (Default Jacket: pl1000_body_0)") then
-        renderer.pending_action = "prefab_body_0"
+    imgui.text_colored("--- Pathway 1: Direct via.Prefab Streaming (Bypasses Scenario) ---", 0.2, 1.0, 0.4, 1.0)
+    if imgui.button("Spawn Claire Body (objectroot/.../pl1000_body_0.pfb)") then
+        renderer.pending_action = "prefab_body_0_clean"
     end
     imgui.same_line()
-    if imgui.button("Spawn Claire Body (Tank Top: pl1000_body_1)") then
-        renderer.pending_action = "prefab_body_1"
+    if imgui.button("Spawn Claire (natives/x64/.../pl1000_body_0.pfb)") then
+        renderer.pending_action = "prefab_body_0_nat"
     end
 
-    if imgui.button("Spawn Claire Root Prefab (pl1000.pfb)") then
-        renderer.pending_action = "prefab_pl1000"
+    if imgui.button("Spawn Claire Root (objectroot/.../pl1000.pfb)") then
+        renderer.pending_action = "prefab_pl1000_clean"
     end
     imgui.same_line()
-    if imgui.button("Despawn Spawned Entity") then
-        renderer.pending_action = "despawn"
+    if imgui.button("Test Path Verification (Leon pl0000 Body)") then
+        renderer.pending_action = "prefab_leon_test"
     end
 
     imgui.separator()
@@ -632,13 +663,17 @@ re.on_draw_ui(function()
     end
 
     imgui.separator()
-    imgui.text_colored("--- Diagnostics & Subsystems ---", 0.9, 0.9, 0.2, 1.0)
-    if imgui.button("Dump Full Reflection & Prefab Lists") then
-        renderer.deep_dump_sam()
+    imgui.text_colored("--- Controls & Diagnostics ---", 0.9, 0.9, 0.2, 1.0)
+    if imgui.button("Despawn Test Entity") then
+        renderer.pending_action = "despawn"
     end
     imgui.same_line()
     if imgui.button("Query Active Characters in Scene") then
         renderer.pending_action = "check_survivors"
+    end
+    imgui.same_line()
+    if imgui.button("Dump Full Reflection") then
+        renderer.deep_dump_sam()
     end
 
     imgui.separator()
