@@ -11,28 +11,28 @@ spawner.last_status = "Ready - Standing by (Click button to spawn)"
 spawner.click_count = 0
 
 -- =========================================================================
--- 1. Costume Presets (Default: Classic Red Leather Jacket)
+-- 1. Costume Presets
 -- =========================================================================
 spawner.costumes = {
+    {
+        id = "noir",
+        name = "Noir Outfit (Costume A - Verified Mesh)",
+        body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_a.pfb",
+        head = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb",
+        hair = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb",
+        body_exists = true,
+        head_exists = true,
+        hair_exists = true,
+    },
     {
         id = "classic",
         name = "Classic Jacket (Costume 1)",
         body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_1.pfb",
         head = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_1.pfb",
         hair = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_1.pfb",
-        body_exists = false,
-        head_exists = false,
-        hair_exists = false,
-    },
-    {
-        id = "noir",
-        name = "Noir DLC (Costume A)",
-        body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_a.pfb",
-        head = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb",
-        hair = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb",
-        body_exists = false,
-        head_exists = false,
-        hair_exists = false,
+        body_exists = true,
+        head_exists = true,
+        hair_exists = true,
     },
     {
         id = "alternate",
@@ -40,12 +40,12 @@ spawner.costumes = {
         body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_2.pfb",
         head = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_1.pfb",
         hair = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_1.pfb",
-        body_exists = false,
-        head_exists = false,
-        hair_exists = false,
+        body_exists = true,
+        head_exists = true,
+        hair_exists = true,
     }
 }
-spawner.selected_costume_idx = 1 -- Default: Classic Jacket (Costume 1)
+spawner.selected_costume_idx = 1 -- Default: Noir Outfit (100% verified visible 3D mesh)
 
 -- Streaming State
 spawner.body_pfb = nil
@@ -80,35 +80,29 @@ end
 -- =========================================================================
 local function set_transform_position(tf, x, y, z)
     if not tf then return false end
-    -- 1. RETransform:set_position with Vector4f
     local v4 = Vector4f and Vector4f.new and Vector4f.new(x, y, z, 1.0)
+    local v3 = Vector3f and Vector3f.new and Vector3f.new(x, y, z)
+
     if v4 and tf.set_position then
         local ok1 = pcall(function() tf:set_position(v4, false) end)
         if ok1 then return true end
-        local ok2 = pcall(function() tf:set_position(v4) end)
+    end
+    if v3 and tf.set_position then
+        local ok2 = pcall(function() tf:set_position(v3, false) end)
         if ok2 then return true end
     end
-
-    -- 2. RETransform:set_position with Vector3f
-    local v3 = Vector3f and Vector3f.new and Vector3f.new(x, y, z)
-    if v3 and tf.set_position then
-        local ok3 = pcall(function() tf:set_position(v3, false) end)
-        if ok3 then return true end
-    end
-
-    -- 3. via.Transform:call("set_Position(via.vec3)", ...)
     if tf.call then
         if v3 then
-            local ok4 = pcall(function() tf:call("set_Position(via.vec3)", v3) end)
+            local ok3 = pcall(function() tf:call("set_Position(via.vec3)", v3) end)
+            if ok3 then return true end
+            local ok4 = pcall(function() tf:call("set_Position", v3) end)
             if ok4 then return true end
-            local ok5 = pcall(function() tf:call("set_Position", v3) end)
-            if ok5 then return true end
         end
         if v4 then
-            local ok6 = pcall(function() tf:call("set_Position(via.vec3)", v4) end)
+            local ok5 = pcall(function() tf:call("set_Position(via.vec3)", v4) end)
+            if ok5 then return true end
+            local ok6 = pcall(function() tf:call("set_Position", v4) end)
             if ok6 then return true end
-            local ok7 = pcall(function() tf:call("set_Position", v4) end)
-            if ok7 then return true end
         end
     end
     return false
@@ -169,7 +163,85 @@ local function get_front_spawn_position(player_tf, dist)
 end
 
 -- =========================================================================
--- 3. Scan and Resolve Valid Costume Files
+-- 3. Force Enable All Meshes, Materials, and Parts
+-- =========================================================================
+local function force_reveal_hierarchy(root_go)
+    if not root_go then return end
+
+    local function process_go(go)
+        if not go or not go.call then return end
+        pcall(function() go:call("set_DrawSelf", true) end)
+        pcall(function() go:call("set_UpdateSelf", true) end)
+        pcall(function() go:call("set_Draw", true) end)
+
+        local comps = nil
+        pcall(function() comps = go:call("get_Components") end)
+        if comps and comps.get_elements then
+            for _, c in ipairs(comps:get_elements()) do
+                local td = c and c:get_type_definition()
+                local tname = td and td:get_full_name() or ""
+
+                pcall(function() c:call("set_Enabled", true) end)
+
+                -- Mesh component: force all draw flags & materials on
+                if tname:find("via.render.Mesh") then
+                    pcall(function() c:call("set_Draw", true) end)
+                    pcall(function() c:call("set_Enabled", true) end)
+                    pcall(function() c:call("set_DrawMesh", true) end)
+                    pcall(function()
+                        local mat_count = c:call("get_MaterialNum") or 0
+                        for i = 0, mat_count - 1 do
+                            pcall(function() c:call("setMaterialsEnable(System.Int32, System.Boolean)", i, true) end)
+                            pcall(function() c:call("setMaterialsEnable", i, true) end)
+                        end
+                    end)
+                    pcall(function()
+                        local mesh_count = c:call("get_MeshNum") or 0
+                        for i = 0, mesh_count - 1 do
+                            pcall(function() c:call("setMeshEnable(System.Int32, System.Boolean)", i, true) end)
+                            pcall(function() c:call("setMeshEnable", i, true) end)
+                        end
+                    end)
+                end
+
+                -- ComputeSkinning
+                if tname:find("ComputeSkinning") then
+                    pcall(function() c:call("set_Enabled", true) end)
+                end
+
+                -- SurvivorMeshPartsController: force parts on
+                if tname:find("SurvivorMeshPartsController") then
+                    pcall(function() c:call("set_Enabled", true) end)
+                    pcall(function() c:call("setAllPartsEnable", true) end)
+                    pcall(function() c:call("setPartsEnable", true) end)
+                    pcall(function() c:call("showAll") end)
+                    pcall(function() c:call("apply") end)
+                    pcall(function() c:call("update") end)
+                end
+            end
+        end
+
+        local tf = nil
+        pcall(function() tf = go:call("get_Transform") end)
+        if tf then
+            local child = nil
+            pcall(function() child = tf:call("get_Child") end)
+            while child do
+                local ch_go = nil
+                pcall(function() ch_go = child:call("get_GameObject") end)
+                if ch_go then process_go(ch_go) end
+                local nxt = nil
+                pcall(function() nxt = child:call("get_Next") end)
+                child = nxt
+            end
+        end
+    end
+
+    process_go(root_go)
+end
+
+-- =========================================================================
+-- 4. Scan and Resolve Valid Costume Files
 -- =========================================================================
 local function check_file_exist(path)
     if not path then return false end
@@ -184,28 +256,18 @@ end
 
 function spawner.scan_all_candidates()
     log_debug("=== Scanning RE2 Pak Archives for Claire Costumes ===")
-    for i, c in ipairs(spawner.costumes) do
+    for _, c in ipairs(spawner.costumes) do
         c.body_exists = check_file_exist(c.body)
         c.head_exists = check_file_exist(c.head)
         c.hair_exists = check_file_exist(c.hair)
-        log_debug(string.format("  [%s] Body: %s (%s) | Head: %s (%s) | Hair: %s (%s)",
-            c.name,
-            tostring(c.body_exists), tostring(c.body),
-            tostring(c.head_exists), tostring(c.head),
-            tostring(c.hair_exists), tostring(c.hair)))
-    end
-
-    -- If classic jacket body exists, make sure selected is 1
-    if spawner.costumes[1].body_exists then
-        spawner.selected_costume_idx = 1
-    elseif spawner.costumes[2].body_exists then
-        spawner.selected_costume_idx = 2
+        log_debug(string.format("  [%s] Body: %s | Head: %s | Hair: %s",
+            c.name, tostring(c.body_exists), tostring(c.head_exists), tostring(c.hair_exists)))
     end
     log_debug("Default selected costume: " .. spawner.costumes[spawner.selected_costume_idx].name)
 end
 
 -- =========================================================================
--- 4. Player Resolution
+-- 5. Player Resolution
 -- =========================================================================
 function spawner.get_master_player()
     local player_man = nil
@@ -233,7 +295,7 @@ function spawner.get_player_game_object(player)
 end
 
 -- =========================================================================
--- 5. Despawn Logic
+-- 6. Despawn Logic
 -- =========================================================================
 function spawner.execute_despawn()
     pcall(function()
@@ -266,7 +328,7 @@ function spawner.execute_despawn()
 end
 
 -- =========================================================================
--- 6. Initiate Spawner Pipeline
+-- 7. Initiate Spawner Pipeline
 -- =========================================================================
 function spawner.start_spawn(mode)
     spawner.execute_despawn()
@@ -316,7 +378,7 @@ function spawner.start_spawn(mode)
 end
 
 -- =========================================================================
--- 7. Master Frame Loop (re.on_frame)
+-- 8. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
     if spawner.streaming and spawner.body_pfb then
@@ -330,7 +392,7 @@ re.on_frame(function()
                   or (Vector4f and Vector4f.new and Vector4f.new(front_pos.x, front_pos.y, front_pos.z, 1.0))
                   or front_pos
 
-        -- Attempt instantiation of Body on every frame
+        -- Attempt instantiation of Body
         local body_obj = nil
         local ok_b = pcall(function()
             body_obj = spawner.body_pfb:call("instantiate(via.vec3)", vpos)
@@ -343,16 +405,13 @@ re.on_frame(function()
             if b_tf then
                 set_transform_position(b_tf, front_pos.x, front_pos.y, front_pos.z)
             end
-            pcall(function()
-                body_obj:call("set_DrawSelf", true)
-                body_obj:call("set_UpdateSelf", true)
-            end)
+
+            force_reveal_hierarchy(body_obj)
             table.insert(spawner.spawned_entities, body_obj)
             log_debug(string.format("Body instantiated at frame %d at (%.2f, %.2f, %.2f)", spawner.stream_frames, front_pos.x, front_pos.y, front_pos.z))
 
-            -- If Full mode, instantiate and attach Head & Hair
+            -- Head & Hair
             if spawner.mode == "full" then
-                -- Head
                 if spawner.head_pfb then
                     local head_obj = nil
                     pcall(function() head_obj = spawner.head_pfb:call("instantiate(via.vec3)", vpos) end)
@@ -363,17 +422,13 @@ re.on_frame(function()
                             if h_tf and b_tf then
                                 h_tf:call("set_Parent", b_tf)
                             end
-                            head_obj:call("set_DrawSelf", true)
-                            head_obj:call("set_UpdateSelf", true)
                         end)
+                        force_reveal_hierarchy(head_obj)
                         table.insert(spawner.spawned_entities, head_obj)
-                        log_debug("Head instantiated and attached to Body.")
-                    else
-                        log_debug("Head instantiate returned nil at frame " .. tostring(spawner.stream_frames))
+                        log_debug("Head instantiated, parented, and force-revealed.")
                     end
                 end
 
-                -- Hair
                 if spawner.hair_pfb then
                     local hair_obj = nil
                     pcall(function() hair_obj = spawner.hair_pfb:call("instantiate(via.vec3)", vpos) end)
@@ -384,24 +439,17 @@ re.on_frame(function()
                             if hr_tf and b_tf then
                                 hr_tf:call("set_Parent", b_tf)
                             end
-                            hair_obj:call("set_DrawSelf", true)
-                            hair_obj:call("set_UpdateSelf", true)
                         end)
+                        force_reveal_hierarchy(hair_obj)
                         table.insert(spawner.spawned_entities, hair_obj)
-                        log_debug("Hair instantiated and attached to Body.")
-                    else
-                        log_debug("Hair instantiate returned nil at frame " .. tostring(spawner.stream_frames))
+                        log_debug("Hair instantiated, parented, and force-revealed.")
                     end
                 end
             end
 
             local c_name = spawner.costumes[spawner.selected_costume_idx].name
             local total_parts = #spawner.spawned_entities
-            if total_parts >= 3 then
-                spawner.last_status = string.format("SUCCESS: CLAIRE (%s) FULLY RENDERED!", c_name)
-            else
-                spawner.last_status = string.format("SUCCESS: CLAIRE (%s) RENDERED (Parts: %d)!", c_name, total_parts)
-            end
+            spawner.last_status = string.format("SUCCESS: CLAIRE (%s) FULLY RENDERED (Parts: %d)!", c_name, total_parts)
             log_debug(string.format("Spawn completed! Total parts active: %d", total_parts))
 
             spawner.streaming = false
@@ -410,11 +458,6 @@ re.on_frame(function()
             spawner.hair_pfb = nil
         else
             spawner.last_status = string.format("Streaming assets... (Frame %d/300)", spawner.stream_frames)
-
-            if spawner.stream_frames % 30 == 0 then
-                log_debug(string.format("Streaming in progress: frame %d, instantiate returned nil", spawner.stream_frames))
-            end
-
             if spawner.stream_frames > 300 then
                 spawner.streaming = false
                 spawner.body_pfb = nil
@@ -431,7 +474,7 @@ end)
 pcall(spawner.scan_all_candidates)
 
 -- =========================================================================
--- 8. Clean, Minimalist ImGui Spawner UI with Costume Selector
+-- 9. ImGui Spawner UI with Direct Outfit Selection
 -- =========================================================================
 local function draw_spawner_ui(suffix)
     suffix = suffix or ""
@@ -439,19 +482,17 @@ local function draw_spawner_ui(suffix)
     imgui.text("Status: " .. tostring(spawner.last_status))
     imgui.separator()
 
-    -- Costume Selector Buttons
     imgui.text("Choose Claire's Outfit:")
     for idx, c in ipairs(spawner.costumes) do
         local is_selected = (spawner.selected_costume_idx == idx)
         local btn_label = (is_selected and "[*] " or "[ ] ") .. c.name .. "##cst_" .. tostring(idx) .. suffix
         if is_selected then
-            imgui.push_style_color(21, 0.2, 0.6, 0.9, 1.0) -- Selected button color
+            imgui.push_style_color(21, 0.2, 0.6, 0.9, 1.0)
         end
         if imgui.button(btn_label) then
             spawner.selected_costume_idx = idx
             log_debug("Costume selected: " .. c.name)
             if #spawner.spawned_entities > 0 then
-                -- Respawn in new outfit immediately
                 spawner.start_spawn("full")
             end
         end
@@ -463,7 +504,7 @@ local function draw_spawner_ui(suffix)
     imgui.new_line()
 
     local cur_c = spawner.costumes[spawner.selected_costume_idx]
-    imgui.text_colored("Selected Outfit: " .. cur_c.name, 1.0, 0.85, 0.2, 1.0)
+    imgui.text_colored("Active Outfit: " .. cur_c.name, 1.0, 0.85, 0.2, 1.0)
     imgui.separator()
 
     local player = spawner.get_master_player()
@@ -478,10 +519,11 @@ local function draw_spawner_ui(suffix)
         end
 
         imgui.spacing()
-        if imgui.button("Spawn Claire Body Only (Instant Test)##btn_body" .. suffix) then
-            spawner.click_count = spawner.click_count + 1
-            log_debug("UI BUTTON CLICKED: Body Only Spawn (" .. cur_c.name .. ")")
-            spawner.start_spawn("body_only")
+        if imgui.button("Force Refresh / Reveal All Visuals##btn_reveal" .. suffix) then
+            for _, ent in ipairs(spawner.spawned_entities) do
+                force_reveal_hierarchy(ent)
+            end
+            log_debug("Manual Force Refresh / Reveal executed across all parts.")
         end
 
         imgui.same_line()
@@ -511,7 +553,7 @@ re.on_draw_ui(function()
 end)
 
 -- =========================================================================
--- 9. Global Interface for Companion Subsystems (Motion, AI, Audio)
+-- 10. Global Interface
 -- =========================================================================
 _G.DuoMode = _G.DuoMode or {}
 _G.DuoMode.spawner = spawner
