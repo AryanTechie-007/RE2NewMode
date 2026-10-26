@@ -1,7 +1,7 @@
 --[[
-    Resident Evil 2: Duo Mode — Claire Redfield Spawner
+    Resident Evil 2: Duo Mode — Claire Redfield Spawner & Companion Locomotion
     Script: character_renderer.lua
-    Purpose: Dedicated harness to spawn Claire Redfield (Body, Face, Hair) into the 3D viewport.
+    Purpose: Single unified script that spawns Claire in the 3D viewport and drives smooth companion gliding.
     Author: AryanTechie-007
 ]]
 
@@ -46,12 +46,35 @@ spawner.streaming = false
 spawner.stream_frames = 0
 spawner.mode = "full"
 
+-- Locomotion Configuration & State (Single-Script Architecture)
+spawner.follow_enabled = false -- Starts OFF so Claire stays right in front of Leon in full view!
+spawner.current_speed = 0.0
+spawner.comp_yaw = 0.0
+spawner.dist_to_leon = 0.0
+spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
+spawner.last_time = nil
+
+-- Follow Tuning Parameters
+local FOLLOW_DIST   = 1.6  -- Claire targets ~1.6m behind Leon
+local STOP_DIST     = 1.1  -- Stops when close to Leon
+local WALK_SPEED    = 2.0  -- Walking gliding speed (m/s)
+local RUN_SPEED     = 4.2  -- Running catch-up speed (m/s)
+local RUN_THRESHOLD = 3.2  -- Catch up when Leon is > 3.2m away
+local TELEPORT_DIST = 20.0 -- Snap if separated by cutscene or elevator
+
 local function log_debug(msg)
     pcall(function()
-        local f = io.open("spawner_debug.txt", "a")
+        local f = io.open("reframework/data/spawner_debug.txt", "a")
         if f then
             f:write(os.date("[%H:%M:%S] ") .. tostring(msg) .. "\n")
             f:close()
+        end
+    end)
+    pcall(function()
+        local f2 = io.open("spawner_debug.txt", "a")
+        if f2 then
+            f2:write(os.date("[%H:%M:%S] ") .. tostring(msg) .. "\n")
+            f2:close()
         end
     end)
     if log and log.info then
@@ -65,7 +88,6 @@ end
 function spawner.scan_all_candidates()
     log_debug("=== Scanning RE2 Pak Archives for Claire Parts ===")
 
-    -- Scan Bodies
     for _, path in ipairs(BODY_CANDIDATES) do
         local exists = false
         pcall(function()
@@ -81,7 +103,6 @@ function spawner.scan_all_candidates()
         end
     end
 
-    -- Scan Heads
     for _, path in ipairs(HEAD_CANDIDATES) do
         local exists = false
         pcall(function()
@@ -97,7 +118,6 @@ function spawner.scan_all_candidates()
         end
     end
 
-    -- Scan Hairs
     for _, path in ipairs(HAIR_CANDIDATES) do
         local exists = false
         pcall(function()
@@ -120,8 +140,25 @@ function spawner.scan_all_candidates()
 end
 
 -- =========================================================================
--- 2. Helper: Safe Yaw and Forward Vector Extraction
+-- 2. Helper Math & Rotation Utilities
 -- =========================================================================
+local function lerp(a, b, t)
+    return a + (b - a) * t
+end
+
+local function lerp_angle(from_rad, to_rad, t)
+    local diff = to_rad - from_rad
+    while diff > math.pi do diff = diff - 2.0 * math.pi end
+    while diff < -math.pi do diff = diff + 2.0 * math.pi end
+    return from_rad + diff * t
+end
+
+local function distance_2d(p1, p2)
+    local dx = p1.x - p2.x
+    local dz = p1.z - p2.z
+    return math.sqrt(dx * dx + dz * dz)
+end
+
 local function get_yaw_from_transform(tf)
     if not tf or not tf.call then return 0.0 end
     local ok1, euler = pcall(function() return tf:call("get_EulerAngles") end)
@@ -154,6 +191,27 @@ local function get_front_spawn_position(player_tf, dist)
         fz = pos.z + math.cos(yaw) * dist
     end)
     return (Vector3f and Vector3f.new and Vector3f.new(fx, fy, fz)) or { x = fx, y = fy, z = fz }
+end
+
+local function move_transform_safely(tf, x, y, z)
+    if not tf then return end
+    -- Method A: via.vec3 native invocation
+    local ok1 = pcall(function()
+        local v = sdk.create_instance("via.vec3")
+        if v then
+            v:call("set_x", x)
+            v:call("set_y", y)
+            v:call("set_z", z)
+            tf:call("set_Position(via.vec3)", v)
+        end
+    end)
+    if ok1 then return end
+
+    -- Method B: Vector3f call
+    pcall(function()
+        local vpos = (Vector3f and Vector3f.new and Vector3f.new(x, y, z)) or { x = x, y = y, z = z }
+        tf:call("set_Position", vpos)
+    end)
 end
 
 -- =========================================================================
@@ -213,6 +271,7 @@ function spawner.execute_despawn()
     spawner.hair_pfb = nil
     spawner.streaming = false
     spawner.stream_frames = 0
+    spawner.current_speed = 0.0
     spawner.last_status = "Despawned - Standing by"
     log_debug("Despawn executed cleanly.")
 end
@@ -271,9 +330,104 @@ function spawner.start_spawn(mode)
 end
 
 -- =========================================================================
--- 6. Master Frame Loop (re.on_frame)
+-- 6. Companion Locomotion Controller (Runs In-Script)
+-- =========================================================================
+local function update_companion_locomotion(delta_time)
+    if not spawner.follow_enabled then
+        spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
+        return
+    end
+
+    local body_obj = spawner.spawned_entities and spawner.spawned_entities[1]
+    if not body_obj then return end
+
+    local player = spawner.get_master_player()
+    local player_go = spawner.get_player_game_object(player)
+    local player_tf = player_go and player_go:call("get_Transform")
+    local body_tf = nil
+    pcall(function() body_tf = body_obj:call("get_Transform") end)
+    if not player_tf or not body_tf then return end
+
+    local leon_pos = nil
+    pcall(function() leon_pos = player_tf:call("get_Position") end)
+    local comp_pos = nil
+    pcall(function() comp_pos = body_tf:call("get_Position") end)
+    if not leon_pos or not comp_pos then return end
+
+    local leon_yaw = get_yaw_from_transform(player_tf)
+    local dist_leon = distance_2d(leon_pos, comp_pos)
+    spawner.dist_to_leon = dist_leon
+
+    -- Target: 1.6m behind Leon
+    local target_x = leon_pos.x - math.sin(leon_yaw) * FOLLOW_DIST
+    local target_z = leon_pos.z - math.cos(leon_yaw) * FOLLOW_DIST
+    local target_y = leon_pos.y
+
+    local dx = target_x - comp_pos.x
+    local dz = target_z - comp_pos.z
+    local dist_target = math.sqrt(dx * dx + dz * dz)
+
+    -- Catch-up teleport if Leon runs far ahead
+    if dist_leon > TELEPORT_DIST then
+        move_transform_safely(body_tf, target_x, target_y, target_z)
+        spawner.current_speed = 0.0
+        spawner.loco_status = "Catch-up Teleported"
+        return
+    end
+
+    local target_speed = 0.0
+    local target_yaw = spawner.comp_yaw
+
+    if dist_target < STOP_DIST or dist_leon < 1.2 then
+        target_speed = 0.0
+        target_yaw = leon_yaw
+        spawner.loco_status = string.format("Idle Alongside Leon (%.2fm)", dist_leon)
+    elseif dist_target >= RUN_THRESHOLD then
+        target_speed = RUN_SPEED
+        target_yaw = math.atan(dx, dz)
+        spawner.loco_status = string.format("Gliding to Catch Up (%.2fm)", dist_leon)
+    else
+        target_speed = WALK_SPEED
+        target_yaw = math.atan(dx, dz)
+        spawner.loco_status = string.format("Gliding with Leon (%.2fm)", dist_leon)
+    end
+
+    spawner.current_speed = lerp(spawner.current_speed, target_speed, math.min(1.0, 5.0 * delta_time))
+    spawner.comp_yaw = lerp_angle(spawner.comp_yaw, target_yaw, math.min(1.0, 6.0 * delta_time))
+
+    -- Smooth facing rotation
+    pcall(function()
+        local half = spawner.comp_yaw * 0.5
+        local qy = math.sin(half)
+        local qw = math.cos(half)
+        local rot = (Quaternion and Quaternion.new and Quaternion.new(0, qy, 0, qw)) or { x = 0, y = qy, z = 0, w = qw }
+        body_tf:call("set_Rotation", rot)
+    end)
+
+    -- Smooth gliding translation
+    if spawner.current_speed > 0.05 and dist_target > 0.1 then
+        local move_dist = spawner.current_speed * delta_time
+        local nx = dx / (dist_target > 0.001 and dist_target or 1.0)
+        local nz = dz / (dist_target > 0.001 and dist_target or 1.0)
+
+        local new_x = comp_pos.x + nx * move_dist
+        local new_z = comp_pos.z + nz * move_dist
+        local new_y = lerp(comp_pos.y, target_y, math.min(1.0, 8.0 * delta_time))
+
+        move_transform_safely(body_tf, new_x, new_y, new_z)
+    end
+end
+
+-- =========================================================================
+-- 7. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
+    local now = os.clock()
+    local dt = spawner.last_time and (now - spawner.last_time) or 0.0166
+    spawner.last_time = now
+    if dt <= 0.0 or dt > 0.1 then dt = 0.0166 end
+
+    -- A. Asset Streaming Pipeline
     if spawner.streaming and spawner.body_pfb then
         spawner.stream_frames = spawner.stream_frames + 1
 
@@ -362,12 +516,6 @@ re.on_frame(function()
             spawner.hair_pfb = nil
         else
             spawner.last_status = string.format("Streaming assets... (Frame %d/300)", spawner.stream_frames)
-
-            -- Periodic log every 30 frames
-            if spawner.stream_frames % 30 == 0 then
-                log_debug(string.format("Streaming in progress: frame %d, instantiate returned nil", spawner.stream_frames))
-            end
-
             if spawner.stream_frames > 300 then
                 spawner.streaming = false
                 spawner.body_pfb = nil
@@ -378,23 +526,33 @@ re.on_frame(function()
             end
         end
     end
+
+    -- B. Active Locomotion (Only runs when Claire is spawned)
+    if #spawner.spawned_entities > 0 then
+        pcall(function()
+            update_companion_locomotion(dt)
+        end)
+    end
 end)
 
 -- Initial scan on script load
 pcall(spawner.scan_all_candidates)
 
 -- =========================================================================
--- 7. Clean, Minimalist ImGui Spawner UI
+-- 8. Clean, Minimalist ImGui Spawner UI
 -- =========================================================================
 local function draw_spawner_ui(suffix)
     suffix = suffix or ""
-    imgui.text_colored("=== RE2 DUO MODE: CLAIRE REDFIELD SPAWNER ===", 0.3, 0.9, 1.0, 1.0)
+    imgui.text_colored("=== RE2 DUO MODE: CLAIRE REDFIELD CONTROLLER ===", 0.3, 0.9, 1.0, 1.0)
     imgui.text("Status: " .. tostring(spawner.last_status))
-    
-    local b_name = spawner.best_body and spawner.best_body:match("([^/]+)$") or "Scanning..."
-    local h_name = spawner.best_head and spawner.best_head:match("([^/]+)$") or "Scanning..."
-    local hr_name = spawner.best_hair and spawner.best_hair:match("([^/]+)$") or "Scanning..."
-    imgui.text(string.format("Assets: %s | %s | %s", b_name, h_name, hr_name))
+
+    if #spawner.spawned_entities > 0 then
+        imgui.text_colored("Claire: ACTIVE IN VIEWPORT (3D Model Rendered)", 0.2, 1.0, 0.4, 1.0)
+        imgui.text("Locomotion: " .. tostring(spawner.loco_status))
+        imgui.text(string.format("Distance to Leon: %.2f m | Speed: %.1f m/s", spawner.dist_to_leon, spawner.current_speed))
+    else
+        imgui.text_colored("Claire: NOT SPAWNED", 1.0, 0.6, 0.2, 1.0)
+    end
     imgui.separator()
 
     local player = spawner.get_master_player()
@@ -402,20 +560,46 @@ local function draw_spawner_ui(suffix)
         imgui.text_colored("Player (Leon): ACTIVE IN SCENE", 0.2, 1.0, 0.4, 1.0)
         imgui.spacing()
 
-        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Full Character) <<<##btn_full" .. suffix) then
+        if imgui.button(">>> SPAWN CLAIRE IN FRONT OF LEON <<<##btn_full" .. suffix) then
             spawner.click_count = spawner.click_count + 1
+            spawner.follow_enabled = false
             log_debug("UI BUTTON CLICKED: Full Character Spawn")
             spawner.start_spawn("full")
         end
 
         imgui.spacing()
-        if imgui.button("Spawn Claire Body Only (Instant Test)##btn_body" .. suffix) then
-            spawner.click_count = spawner.click_count + 1
-            log_debug("UI BUTTON CLICKED: Body Only Spawn")
-            spawner.start_spawn("body_only")
+        local follow_label = spawner.follow_enabled
+            and "Follow Leon & Glide: [ON] (Click to Pause)##toggle_loco" .. suffix
+            or  "Follow Leon & Glide: [OFF] (Click to Start Gliding)##toggle_loco" .. suffix
+
+        if spawner.follow_enabled then
+            imgui.push_style_color(21, 0.2, 0.7, 0.3, 1.0)
+        end
+        if imgui.button(follow_label) then
+            spawner.follow_enabled = not spawner.follow_enabled
+            log_debug("Follow toggled: " .. tostring(spawner.follow_enabled))
+        end
+        if spawner.follow_enabled then
+            imgui.pop_style_color(1)
         end
 
         imgui.same_line()
+        if imgui.button("Bring In Front of Me##snap_front" .. suffix) then
+            local body_obj = spawner.spawned_entities and spawner.spawned_entities[1]
+            local player_go = spawner.get_player_game_object()
+            local player_tf = player_go and player_go:call("get_Transform")
+            if body_obj and player_tf then
+                local b_tf = body_obj:call("get_Transform")
+                local fp = get_front_spawn_position(player_tf, 2.0)
+                if b_tf and fp then
+                    move_transform_safely(b_tf, fp.x, fp.y, fp.z)
+                    spawner.follow_enabled = false
+                    log_debug("Claire brought in front of Leon.")
+                end
+            end
+        end
+
+        imgui.spacing()
         if imgui.button("Despawn Claire##btn_desp" .. suffix) then
             log_debug("UI BUTTON CLICKED: Despawn")
             pcall(spawner.execute_despawn)
@@ -429,7 +613,7 @@ end
 -- Dedicated Standalone Floating Window
 re.on_frame(function()
     pcall(function()
-        if imgui.begin_window("Claire Redfield Spawner (Duo Mode)", true, 0) then
+        if imgui.begin_window("Claire Redfield Controller (Duo Mode)", true, 0) then
             draw_spawner_ui("##win")
             imgui.end_window()
         end
@@ -440,22 +624,3 @@ end)
 re.on_draw_ui(function()
     draw_spawner_ui("##menu")
 end)
-
-
--- =========================================================================
--- 8. Global OOP Interface for Companion Motion & Systems
--- =========================================================================
-_G.DuoMode = _G.DuoMode or {}
-_G.DuoMode.spawner = spawner
-_G.DuoMode.get_companion = function()
-    return spawner.spawned_entities and spawner.spawned_entities[1]
-end
-_G.DuoMode.get_companion_body = function()
-    return spawner.spawned_entities and spawner.spawned_entities[1]
-end
-_G.DuoMode.get_companion_parts = function()
-    return spawner.spawned_entities
-end
-_G.DuoMode.is_rendered = function()
-    return spawner.spawned_entities and #spawner.spawned_entities > 0 and spawner.spawned_entities[1] ~= nil
-end
