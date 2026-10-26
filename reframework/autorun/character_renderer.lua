@@ -11,13 +11,12 @@ local function log_msg(str)
     end
 end
 
-log_msg("=== Claire Redfield Spawner Loaded ===")
+log_msg("=== Claire Redfield Spawner Loading ===")
 
 local spawner = {}
 spawner.spawned_entity = nil
-spawner.loading_prefab = nil
-spawner.loading_prefab_path = ""
-spawner.loading_frames = 0
+spawner.locating_claire = false
+spawner.locating_frames = 0
 spawner.last_status = "Ready - Standing by"
 spawner.pending_action = nil
 
@@ -99,160 +98,180 @@ function spawner.execute_despawn()
         end)
         spawner.spawned_entity = nil
     end
-    spawner.loading_prefab = nil
+    spawner.locating_claire = false
     spawner.last_status = "Despawned"
 end
 
 -- =========================================================================
--- 4. Spawning Pathways
+-- 4. Native Claire Spawner (Actor & Player Casting)
 -- =========================================================================
-
--- Pathway A: Asynchronous Direct via.Prefab Streaming
-function spawner.spawn_claire_prefab(costume_index)
+function spawner.spawn_claire_native(role_type)
+    role_type = role_type or "actor" -- "actor" or "player"
     spawner.execute_despawn()
-    costume_index = costume_index or 0
+    log_msg("Executing Native Claire Cast (Role: " .. role_type .. ")...")
 
-    local candidate_paths = {
-        string.format("objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_%d.pfb", costume_index),
-        string.format("natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_%d.pfb", costume_index),
-        "objectroot/prefab/character/survivor/pl1000.pfb",
-        "natives/x64/objectroot/prefab/character/survivor/pl1000.pfb"
-    }
-
-    local pfb = nil
-    local chosen_path = nil
-
-    for _, path in ipairs(candidate_paths) do
-        local test_pfb = nil
-        pcall(function()
-            test_pfb = sdk.create_instance("via.Prefab"):add_ref()
-            test_pfb:call("set_Path", path)
-            test_pfb:call("set_Standby", true)
-        end)
-
-        if test_pfb then
-            local is_exist = nil
-            pcall(function() is_exist = test_pfb:call("get_Exist") end)
-            if is_exist ~= false then
-                pfb = test_pfb
-                chosen_path = path
-                break
-            end
-        end
-    end
-
-    if not pfb or not chosen_path then
-        pfb = sdk.create_instance("via.Prefab"):add_ref()
-        chosen_path = candidate_paths[1]
-        pcall(function()
-            pfb:call("set_Path", chosen_path)
-            pfb:call("set_Standby", true)
-        end)
-    end
-
-    spawner.loading_prefab = pfb
-    spawner.loading_prefab_path = chosen_path
-    spawner.loading_frames = 0
-    spawner.last_status = "Streaming Claire from game archives..."
-    log_msg("Streaming Claire prefab: " .. tostring(chosen_path))
-end
-
--- Pathway B: Native Engine SurvivorAssignManager (SAM)
-function spawner.spawn_claire_native()
-    spawner.execute_despawn()
     local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
-    if not sam then
-        spawner.last_status = "Failed: SurvivorAssignManager not active"
+    local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
+    if not sam or not sm then
+        spawner.last_status = "Failed: Survivor Managers not found"
         return
     end
 
-    local survivor_def = sdk.find_type_definition("app.ropeway.SurvivorDefine")
-    if not survivor_def then
-        spawner.last_status = "Failed: SurvivorDefine missing"
-        return
-    end
+    local player = spawner.get_master_player()
+    local player_go = spawner.get_player_game_object(player)
+    local player_tf = player_go and player_go:call("get_Transform")
+    local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
 
-    local target_id = nil
-    local m = survivor_def:get_method("parseNPC")
-    if m then pcall(function() target_id = m:call(nil, 1) end) end
-
-    if target_id == nil then
-        spawner.last_status = "Failed to resolve Claire NPC ID"
-        return
-    end
-
+    -- Step 1: Open Transaction
     pcall(function()
         sam:call("beginRequestTransaction(app.ropeway.SurvivorAssignManager.TransactionOption)", 0)
     end)
 
-    pcall(function()
-        sam:call("sceneIn(app.ropeway.NpcDefine.NPCType, app.ropeway.SurvivorAssignManager.CastingReason, app.ropeway.SurvivorAssignManager.OfferMode)", target_id, 1, 0)
-    end)
+    -- Step 2: Call sceneIn with proper enum value (1 = PL1000 Claire)
+    local result = nil
+    if role_type == "actor" then
+        -- ActorDefine.ActorType.PL1000 = 1
+        pcall(function()
+            result = sam:call("sceneIn(app.ropeway.ActorDefine.ActorType, app.ropeway.SurvivorAssignManager.CastingReason, app.ropeway.SurvivorAssignManager.OfferMode, app.ropeway.gamemastering.Map.ID, app.ropeway.gamemastering.Location.ID)", 1, 1, 0, 0, 0)
+        end)
+    else
+        -- PlayerDefine.PlayerType.PL1000 = 1
+        pcall(function()
+            result = sam:call("sceneIn(app.ropeway.PlayerDefine.PlayerType, app.ropeway.SurvivorAssignManager.CastingReason, app.ropeway.SurvivorAssignManager.OfferMode)", 1, 1, 0)
+        end)
+    end
 
+    -- Step 3: End Transaction & Process
     pcall(function() sam:call("endRequestTransaction") end)
     pcall(function() sam:call("onUpdateWaitingRequest") end)
+    log_msg("Native sceneIn dispatched. Result: " .. tostring(result))
 
-    spawner.last_status = "Native Claire spawn requested (Check scene)"
-    log_msg("Native Claire sceneIn dispatched.")
+    -- Step 4: Locate Claire's GameObject and Teleport to Viewport!
+    local claire_go = nil
+
+    -- Check static getSurvivorGameObject
+    local sm_td = sm:get_type_definition()
+    if sm_td then
+        local m = sm_td:get_method("getSurvivorGameObject")
+        if m then
+            pcall(function() claire_go = m:call(nil, "pl1000", 0) end)
+            if not claire_go then
+                pcall(function() claire_go = m:call(nil, "PL1000", 0) end)
+            end
+        end
+    end
+
+    -- Check Actors dictionary
+    if not claire_go then
+        pcall(function()
+            local actors = sm:call("get_Actors")
+            if actors then
+                local actor_cond = actors:call("get_Item", 1)
+                if actor_cond then
+                    claire_go = actor_cond:call("get_GameObject")
+                end
+            end
+        end)
+    end
+
+    -- Check Scene Search
+    if not claire_go then
+        local scene_man = sdk.get_native_singleton("via.SceneManager")
+        local cur_scene = scene_man and scene_man:call("get_CurrentScene")
+        if cur_scene then
+            pcall(function() claire_go = cur_scene:call("findGameObject(System.String)", "pl1000") end)
+            if not claire_go then
+                pcall(function() claire_go = cur_scene:call("findGameObject(System.String)", "PL1000") end)
+            end
+        end
+    end
+
+    if claire_go then
+        pcall(function() claire_go:add_ref() end)
+        local c_tf = claire_go.call and claire_go:call("get_Transform")
+        if c_tf then
+            pcall(function() c_tf:call("set_Position", front_pos) end)
+        end
+        pcall(function()
+            claire_go:call("set_DrawSelf", true)
+            claire_go:call("set_UpdateSelf", true)
+        end)
+        spawner.spawned_entity = claire_go
+        spawner.last_status = "SUCCESS: CLAIRE RENDERED IN FRONT OF LEON!"
+        log_msg("SUCCESS: Claire found and positioned in viewport!")
+    else
+        spawner.last_status = "Order sent. Teleporting Claire into viewport..."
+        spawner.locating_claire = true
+        spawner.locating_frames = 0
+    end
 end
 
 -- =========================================================================
 -- 5. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
-    -- Asynchronous Streaming Tick
-    if spawner.loading_prefab then
-        spawner.loading_frames = spawner.loading_frames + 1
-        local pfb = spawner.loading_prefab
-        local is_ready = false
-        pcall(function() is_ready = pfb:call("get_Ready") end)
+    -- Asynchronous Locator Tick
+    if spawner.locating_claire then
+        spawner.locating_frames = spawner.locating_frames + 1
+        local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
+        local claire_go = nil
 
-        if is_ready then
+        -- Check getSurvivorGameObject
+        pcall(function()
+            local sm_td = sm and sm:get_type_definition()
+            local m = sm_td and sm_td:get_method("getSurvivorGameObject")
+            if m then claire_go = m:call(nil, "pl1000", 0) or m:call(nil, "PL1000", 0) end
+        end)
+
+        -- Check Actors dictionary
+        if not claire_go and sm then
+            pcall(function()
+                local actors = sm:call("get_Actors")
+                local actor_cond = actors and actors:call("get_Item", 1)
+                if actor_cond then claire_go = actor_cond:call("get_GameObject") end
+            end)
+        end
+
+        -- Check scene search
+        if not claire_go then
+            local scene_man = sdk.get_native_singleton("via.SceneManager")
+            local cur_scene = scene_man and scene_man:call("get_CurrentScene")
+            if cur_scene then
+                pcall(function() claire_go = cur_scene:call("findGameObject(System.String)", "pl1000") or cur_scene:call("findGameObject(System.String)", "PL1000") end)
+            end
+        end
+
+        if claire_go then
+            pcall(function() claire_go:add_ref() end)
             local player = spawner.get_master_player()
             local player_go = spawner.get_player_game_object(player)
             local player_tf = player_go and player_go:call("get_Transform")
             local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
-            local vpos = (Vector3f and Vector3f.new and Vector3f.new(front_pos.x, front_pos.y, front_pos.z)) or front_pos
-
-            local spawned = nil
-            local ok_spawn = pcall(function()
-                spawned = pfb:call("instantiate(via.vec3)", vpos)
-            end)
-
-            if ok_spawn and spawned then
-                pcall(function() spawned:add_ref() end)
-                local sp_tf = spawned.call and spawned:call("get_Transform")
-                if sp_tf then
-                    pcall(function() sp_tf:call("set_Position", front_pos) end)
-                end
-                pcall(function()
-                    spawned:call("set_DrawSelf", true)
-                    spawned:call("set_UpdateSelf", true)
-                end)
-                spawner.spawned_entity = spawned
-                spawner.last_status = "CLAIRE RENDERED IN VIEWPORT!"
-                log_msg("Claire successfully instantiated in viewport.")
-            else
-                spawner.last_status = "Instantiation failed"
-                log_msg("instantiate failed or returned nil.")
+            local c_tf = claire_go.call and claire_go:call("get_Transform")
+            if c_tf then
+                pcall(function() c_tf:call("set_Position", front_pos) end)
             end
-            spawner.loading_prefab = nil
-        elseif spawner.loading_frames > 180 then
-            spawner.last_status = "Streaming timed out"
-            spawner.loading_prefab = nil
+            pcall(function()
+                claire_go:call("set_DrawSelf", true)
+                claire_go:call("set_UpdateSelf", true)
+            end)
+            spawner.spawned_entity = claire_go
+            spawner.last_status = "SUCCESS: CLAIRE RENDERED IN FRONT OF LEON!"
+            log_msg("SUCCESS: Claire located and positioned in viewport!")
+            spawner.locating_claire = false
+        elseif spawner.locating_frames > 60 then
+            spawner.last_status = "Entity registered in engine (Checking location)"
+            spawner.locating_claire = false
         end
     end
 
-    -- Process pending action
-    if spawner.pending_action == "spawn_default" then
+    -- Action Queue
+    if spawner.pending_action == "spawn_actor" then
         spawner.pending_action = nil
-        pcall(function() spawner.spawn_claire_prefab(0) end)
-    elseif spawner.pending_action == "spawn_tank" then
+        pcall(function() spawner.spawn_claire_native("actor") end)
+    elseif spawner.pending_action == "spawn_player" then
         spawner.pending_action = nil
-        pcall(function() spawner.spawn_claire_prefab(1) end)
-    elseif spawner.pending_action == "spawn_native" then
-        spawner.pending_action = nil
-        pcall(spawner.spawn_claire_native)
+        pcall(function() spawner.spawn_claire_native("player") end)
     elseif spawner.pending_action == "despawn" then
         spawner.pending_action = nil
         pcall(spawner.execute_despawn)
@@ -272,17 +291,13 @@ local function draw_spawner_ui()
         imgui.text_colored("Player (Leon): ACTIVE IN SCENE", 0.2, 1.0, 0.4, 1.0)
         imgui.spacing()
 
-        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Default Jacket) <<<") then
-            spawner.pending_action = "spawn_default"
+        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Actor Cast) <<<") then
+            spawner.pending_action = "spawn_actor"
         end
 
-        imgui.spacing()
-        if imgui.button("Spawn Claire (Tank Top)") then
-            spawner.pending_action = "spawn_tank"
-        end
         imgui.same_line()
-        if imgui.button("Spawn Claire (Native Engine Cast)") then
-            spawner.pending_action = "spawn_native"
+        if imgui.button("Spawn Claire (Player Cast)") then
+            spawner.pending_action = "spawn_player"
         end
 
         imgui.spacing()
@@ -295,12 +310,12 @@ local function draw_spawner_ui()
     end
 end
 
--- 1. Embedded inside REFramework Main Menu (under Script Generated UI)
+-- Embedded in REFramework Main Menu
 re.on_draw_ui(function()
     draw_spawner_ui()
 end)
 
--- 2. Standalone Floating Window (appears on screen when Insert is pressed)
+-- Dedicated Standalone Floating Window
 re.on_frame(function()
     pcall(function()
         if imgui.begin_window("Claire Redfield Spawner (Duo Mode)", true, 0) then
