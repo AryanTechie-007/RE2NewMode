@@ -185,11 +185,21 @@ function renderer.deep_dump_sam()
         "app.ropeway.SurvivorDefine",
         "app.ropeway.SurvivorDefine.SurvivorType",
         "app.ropeway.SurvivorDefine.Costume",
+        "app.ropeway.PlayerDefine.PlayerType",
+        "app.ropeway.NpcDefine.NPCType",
+        "app.ropeway.ActorDefine.ActorType",
         "app.ropeway.SurvivorManager",
+        "app.ropeway.SurvivorPrefabInfo",
+        "app.ropeway.SurvivorFolderSetting",
+        "app.ropeway.SurvivorFolderSetting.PlayerFolder",
+        "app.ropeway.SurvivorFolderSetting.NpcFolder",
+        "app.ropeway.SurvivorFolderSetting.ActorFolder",
         "app.ropeway.level.SurvivorStandbyManger",
         "app.ropeway.SurvivorStandbyCatalog",
-        "app.ropeway.SurvivorFolderSetting",
-        "app.ropeway.SurvivorCast"
+        "app.ropeway.SurvivorCast",
+        "via.Prefab",
+        "via.PrefabResource",
+        "via.PrefabResourceHolder"
     }
 
     for _, tname in ipairs(types_to_dump) do
@@ -236,6 +246,41 @@ function renderer.deep_dump_sam()
             end
         end
     end
+
+    local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
+    if sm then
+        dlog("[DUMP] === LIVE SURVIVOR MANAGER INSTANCE DATA ===")
+        local sm_td = sm:get_type_definition()
+        if sm_td then
+            for _, f in ipairs(sm_td:get_fields() or {}) do
+                if not f:is_static() then
+                    local ok, val = pcall(function() return f:get_data(sm) end)
+                    if ok then
+                        dlog(string.format("[DUMP]   SM.%s = %s", f:get_name(), tostring(val)))
+                    end
+                end
+            end
+        end
+
+        -- Check PrefabInfoList
+        local ok_p, pinfo_list = pcall(function() return sm:call("get_PrefabInfoList") end)
+        if ok_p and pinfo_list then
+            local cnt = 0
+            pcall(function() cnt = pinfo_list:call("get_Count") end)
+            dlog(string.format("[DUMP]   SM.PrefabInfoList Count = %d", cnt or 0))
+            for i = 0, (cnt or 0) - 1 do
+                pcall(function()
+                    local item = pinfo_list:call("get_Item", i)
+                    if item then
+                        local stype = item:get_field("SurvivorType")
+                        local loaded = item:get_field("IsLoaded") or item:get_field("Loaded")
+                        local pfb = item:get_field("Prefab") or item:get_field("Resource")
+                        dlog(string.format("[DUMP]     [%d] SurvivorType=%s, Loaded=%s, Prefab=%s", i, tostring(stype), tostring(loaded), tostring(pfb)))
+                    end
+                end)
+            end
+        end
+    end
     dlog("--- COMPLETED DEEP DUMP OF SAM & SURVIVOR SUBSYSTEMS ---")
 end
 
@@ -270,12 +315,50 @@ function renderer.execute_despawn()
     end
 end
 
--- Safe Duplication executed on logic tick (prevents D3D12 Present 87a0001 error)
-function renderer.execute_duplication()
-    add_diag("NOTICE: Duplicate GameObject is deprecated due to D3D12 device resets.")
-    add_diag("RE Engine player singletons cannot be cloned via duplicateGameObject.")
-    add_diag("Use Native SAM Casting (Experiment 1) instead.")
-    renderer.last_status = "Duplication Deprecated - Use Native SAM"
+-- Check Active Survivors across SurvivorManager
+function renderer.check_active_survivors()
+    local survivor_man = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
+    if not survivor_man then
+        add_diag("SurvivorManager singleton not available.")
+        return
+    end
+
+    add_diag("Querying SurvivorManager for active characters...")
+    
+    -- Check Player
+    local p_cond = nil
+    pcall(function() p_cond = survivor_man:call("get_Player") end)
+    if p_cond then
+        local p_go = nil
+        pcall(function() p_go = p_cond:call("get_GameObject") end)
+        local p_name = (p_go and p_go.call and p_go:call("get_Name")) or "Player"
+        add_diag(string.format("  Player: ACTIVE -> '%s'", tostring(p_name)))
+    else
+        add_diag("  Player: None")
+    end
+
+    -- Check NPC
+    local npc_cond = nil
+    pcall(function() npc_cond = survivor_man:call("get_Npc") end)
+    if npc_cond then
+        local npc_go = nil
+        pcall(function() npc_go = npc_cond:call("get_GameObject") end)
+        local npc_name = (npc_go and npc_go.call and npc_go:call("get_Name")) or "NPC"
+        add_diag(string.format("  NPC: ACTIVE -> '%s'", tostring(npc_name)))
+        renderer.spawned_entity = npc_go
+        renderer.last_status = "NPC ACTIVE IN SCENE: " .. tostring(npc_name)
+    else
+        add_diag("  NPC: not active (null)")
+    end
+
+    -- Check Actors
+    local actors_dict = nil
+    pcall(function() actors_dict = survivor_man:call("get_Actors") end)
+    if actors_dict then
+        local count = 0
+        pcall(function() count = actors_dict:call("get_Count") end)
+        add_diag(string.format("  Actors Dictionary Count: %d", count or 0))
+    end
 end
 
 -- Safe Native SAM Transaction executed on logic tick
@@ -315,48 +398,11 @@ function renderer.execute_sam_transaction()
     end
 end
 
--- Check Active Survivors across SurvivorManager
-function renderer.check_active_survivors()
-    local survivor_man = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
-    if not survivor_man then
-        add_diag("SurvivorManager singleton not available.")
-        return
-    end
-
-    add_diag("Querying SurvivorManager for active survivors (0=Leon, 1=Claire, 2=Ada, 3=Sherry)...")
-    for i = 0, 3 do
-        local s = nil
-        pcall(function() s = survivor_man:call("getSurvivor(app.ropeway.SurvivorDefine.SurvivorType)", i) end)
-        if not s then
-            pcall(function() s = survivor_man:call("getSurvivor", i) end)
-        end
-        if not s then
-            pcall(function() s = survivor_man:call("getSurvivorCharacter(app.ropeway.SurvivorDefine.SurvivorType)", i) end)
-        end
-        if not s then
-            pcall(function() s = survivor_man:call("getSurvivorCharacter", i) end)
-        end
-
-        if s then
-            local go = nil
-            pcall(function() go = s:call("get_GameObject") end)
-            local goname = (go and go.call and go:call("get_Name")) or tostring(s)
-            add_diag(string.format("  -> SurvivorType %d: ACTIVE (%s)", i, tostring(goname)))
-            if i == 1 then
-                renderer.spawned_entity = go or s
-                renderer.last_status = "CLAIRE REDFIELD ACTIVE IN WORLD!"
-            end
-        else
-            add_diag(string.format("  -> SurvivorType %d: not active", i))
-        end
-    end
-end
-
--- Native SAM Casting Order for Claire (PL1000)
-function renderer.execute_sam_cast(order_type_name)
-    order_type_name = order_type_name or "app.ropeway.SurvivorAssignManager.CastingOrderNpc"
+-- Native SAM sceneIn Casting for Claire (SurvivorType 1 / PL1000)
+function renderer.execute_sam_scene_in(mode)
+    mode = mode or "npc" -- "npc", "player", "actor"
     add_diag("==================================================")
-    add_diag("Initiating Native SAM Casting: Claire PL1000 via " .. order_type_name)
+    add_diag(string.format("Native SAM: Executing sceneIn for Claire PL1000 (Mode: %s)...", mode))
 
     local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
     if not sam then
@@ -365,49 +411,35 @@ function renderer.execute_sam_cast(order_type_name)
         return
     end
 
-    local order_td = sdk.find_type_definition(order_type_name)
-    if not order_td then
-        add_diag("FAIL: Order Type Definition not found: " .. order_type_name)
-        renderer.last_status = "Failed: Type definition missing"
+    local survivor_def = sdk.find_type_definition("app.ropeway.SurvivorDefine")
+    if not survivor_def then
+        add_diag("FAIL: app.ropeway.SurvivorDefine type not found.")
+        renderer.last_status = "Failed: SurvivorDefine missing"
         return
     end
 
-    local order = nil
-    local ok_c = pcall(function()
-        order = sdk.create_instance(order_type_name):add_ref()
-    end)
-    if not ok_c or not order then
-        add_diag("FAIL: Failed to create instance of " .. order_type_name)
-        renderer.last_status = "Failed to create order instance"
+    local target_id = nil
+    if mode == "npc" then
+        local m = survivor_def:get_method("parseNPC")
+        if m then pcall(function() target_id = m:call(nil, 1) end) end
+        add_diag("SurvivorDefine.parseNPC(1 [Claire]) -> NpcType: " .. tostring(target_id))
+    elseif mode == "player" then
+        local m = survivor_def:get_method("parsePlayer")
+        if m then pcall(function() target_id = m:call(nil, 1) end) end
+        add_diag("SurvivorDefine.parsePlayer(1 [Claire]) -> PlayerType: " .. tostring(target_id))
+    elseif mode == "actor" then
+        local m = survivor_def:get_method("parseActor")
+        if m then pcall(function() target_id = m:call(nil, 1) end) end
+        add_diag("SurvivorDefine.parseActor(1 [Claire]) -> ActorType: " .. tostring(target_id))
+    end
+
+    if target_id == nil then
+        add_diag("FAIL: Could not resolve target ID for mode: " .. mode)
+        renderer.last_status = "Failed to resolve target ID"
         return
     end
-    add_diag("Successfully created order instance: " .. order_type_name)
 
-    -- Configure order fields
-    local curr_td = order_td
-    while curr_td do
-        for _, f in ipairs(curr_td:get_fields() or {}) do
-            local fname = f:get_name()
-            local lower = string.lower(fname)
-            local ftype = f:get_type()
-            local ftname = ftype and ftype:get_full_name() or ""
-
-            -- Match SurvivorType
-            if string.find(lower, "survivortype") or (string.find(lower, "type") and string.find(ftname, "SurvivorType")) then
-                pcall(function() f:set_data(order, 1) end)
-                add_diag(string.format("  Configured field: %s = 1 (Claire Redfield)", fname))
-            elseif string.find(lower, "reason") or string.find(ftname, "CastingReason") then
-                pcall(function() f:set_data(order, 1) end) -- 1 = InitialSet / Normal
-                add_diag(string.format("  Configured field: %s = 1 (Reason)", fname))
-            elseif string.find(lower, "costume") or string.find(ftname, "Costume") then
-                pcall(function() f:set_data(order, 0) end) -- 0 = Default
-                add_diag(string.format("  Configured field: %s = 0 (Default Costume)", fname))
-            end
-        end
-        curr_td = curr_td:get_parent_type()
-    end
-
-    -- Step A: Begin Request Transaction
+    -- Step A: Begin Transaction
     local ok_tx = false
     pcall(function()
         sam:call("beginRequestTransaction(app.ropeway.SurvivorAssignManager.TransactionOption)", 0)
@@ -421,42 +453,95 @@ function renderer.execute_sam_cast(order_type_name)
     end
     add_diag("SAM Transaction Opened: " .. tostring(ok_tx))
 
-    -- Step B: Build Current Request
-    local ok_bld = false
-    pcall(function()
-        sam:call("buildCurrentRequest(app.ropeway.SurvivorAssignManager.CastingOrder)", order)
-        ok_bld = true
-        add_diag("SAM: buildCurrentRequest(CastingOrder) succeeded.")
-    end)
-    if not ok_bld then
-        pcall(function()
-            sam:call("buildCurrentRequest", order)
-            ok_bld = true
-            add_diag("SAM: buildCurrentRequest fallback succeeded.")
+    -- Step B: Call sceneIn
+    local result = nil
+    local ok_call = false
+    if mode == "npc" then
+        ok_call = pcall(function()
+            result = sam:call("sceneIn(app.ropeway.NpcDefine.NPCType, app.ropeway.SurvivorAssignManager.CastingReason, app.ropeway.SurvivorAssignManager.OfferMode)", target_id, 1, 0)
+        end)
+    elseif mode == "player" then
+        ok_call = pcall(function()
+            result = sam:call("sceneIn(app.ropeway.PlayerDefine.PlayerType, app.ropeway.SurvivorAssignManager.CastingReason, app.ropeway.SurvivorAssignManager.OfferMode)", target_id, 1, 0)
+        end)
+    elseif mode == "actor" then
+        ok_call = pcall(function()
+            result = sam:call("sceneIn(app.ropeway.ActorDefine.ActorType, app.ropeway.SurvivorAssignManager.CastingReason, app.ropeway.SurvivorAssignManager.OfferMode, app.ropeway.gamemastering.Map.ID, app.ropeway.gamemastering.Location.ID)", target_id, 1, 0, 0, 0)
         end)
     end
 
-    -- Step C: End Request Transaction
-    local ok_end = false
-    pcall(function()
-        sam:call("endRequestTransaction")
-        ok_end = true
-        add_diag("SAM: endRequestTransaction() succeeded.")
-    end)
+    add_diag(string.format("SAM sceneIn invoked (ok=%s, result=%s)", tostring(ok_call), tostring(result)))
+
+    -- Step C: End Transaction
+    pcall(function() sam:call("endRequestTransaction") end)
+    add_diag("SAM Transaction closed.")
 
     -- Step D: Process Waiting Requests
-    pcall(function()
-        sam:call("onUpdateWaitingRequest")
-        add_diag("SAM: onUpdateWaitingRequest() triggered.")
+    pcall(function() sam:call("onUpdateWaitingRequest") end)
+    add_diag("SAM onUpdateWaitingRequest triggered.")
+
+    renderer.last_status = string.format("SAM sceneIn Sent (%s: %s)", mode, tostring(result))
+    renderer.check_active_survivors()
+    add_diag("==================================================")
+end
+
+-- Direct via.Prefab Spawning (Bypasses story locks and instantiates Claire's mesh directly)
+function renderer.execute_direct_prefab_spawn(prefab_path)
+    renderer.execute_despawn()
+    prefab_path = prefab_path or "natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb"
+    add_diag("==================================================")
+    add_diag("Direct via.Prefab Spawner: Loading " .. prefab_path)
+
+    local player = renderer.get_master_player()
+    local player_go = renderer.get_player_game_object(player)
+    local player_tf = player_go and player_go:call("get_Transform")
+    local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
+
+    local pfb = nil
+    local ok_c = pcall(function()
+        pfb = sdk.create_instance("via.Prefab"):add_ref()
+    end)
+    if not ok_c or not pfb then
+        add_diag("FAIL: sdk.create_instance('via.Prefab') failed.")
+        renderer.last_status = "Failed: via.Prefab creation"
+        return
+    end
+
+    pcall(function() pfb:set_field("Path", prefab_path) end)
+    pcall(function() pfb:call("set_Path", prefab_path) end)
+    pcall(function() pfb:set_field("Standby", true) end)
+    pcall(function() pfb:call("set_Standby", true) end)
+
+    add_diag("Configured via.Prefab Path. Instantiating in scene...")
+
+    local spawned = nil
+    local ok_inst = pcall(function()
+        local vpos = (Vector3f and Vector3f.new and Vector3f.new(front_pos.x, front_pos.y, front_pos.z)) or front_pos
+        spawned = pfb:call("instantiate(via.vec3)", vpos)
     end)
 
-    if ok_bld and ok_end then
-        renderer.last_status = "SAM Casting Order Queued (" .. order_type_name .. ")"
-        add_diag("SUCCESS: Claire PL1000 casting order committed.")
-        renderer.check_active_survivors()
+    if not ok_inst or not spawned then
+        pcall(function()
+            spawned = pfb:call("instantiate")
+        end)
+    end
+
+    if spawned then
+        pcall(function() spawned:add_ref() end)
+        add_diag("SUCCESS: via.Prefab instantiated! Entity: " .. tostring(spawned))
+        local sp_tf = spawned.call and spawned:call("get_Transform")
+        if sp_tf then
+            pcall(function() sp_tf:call("set_Position", front_pos) end)
+        end
+        pcall(function()
+            spawned:call("set_DrawSelf", true)
+            spawned:call("set_UpdateSelf", true)
+        end)
+        renderer.spawned_entity = spawned
+        renderer.last_status = "DIRECT PREFAB INSTANTIATED IN VIEWPORT!"
     else
-        renderer.last_status = "SAM Casting Order Failed"
-        add_diag(string.format("FAIL: build=%s, end=%s", tostring(ok_bld), tostring(ok_end)))
+        add_diag("via.Prefab instantiate returned nil. Resource may need warming.")
+        renderer.last_status = "Prefab instantiate returned nil"
     end
     add_diag("==================================================")
 end
@@ -465,24 +550,27 @@ end
 -- 5. Master Logic Loop (re.on_frame) — Thread-safe execution
 -- =========================================================================
 re.on_frame(function()
-    if renderer.pending_action == "duplicate" then
-        renderer.pending_action = nil
-        pcall(renderer.execute_duplication)
-    elseif renderer.pending_action == "costume" then
-        renderer.pending_action = nil
-        pcall(renderer.execute_costume_swap)
-    elseif renderer.pending_action == "sam" then
+    if renderer.pending_action == "sam" then
         renderer.pending_action = nil
         pcall(renderer.execute_sam_transaction)
-    elseif renderer.pending_action == "sam_cast_npc" then
+    elseif renderer.pending_action == "sam_scenein_npc" then
         renderer.pending_action = nil
-        pcall(function() renderer.execute_sam_cast("app.ropeway.SurvivorAssignManager.CastingOrderNpc") end)
-    elseif renderer.pending_action == "sam_cast_actor" then
+        pcall(function() renderer.execute_sam_scene_in("npc") end)
+    elseif renderer.pending_action == "sam_scenein_actor" then
         renderer.pending_action = nil
-        pcall(function() renderer.execute_sam_cast("app.ropeway.SurvivorAssignManager.CastingOrderActor") end)
-    elseif renderer.pending_action == "sam_cast_player" then
+        pcall(function() renderer.execute_sam_scene_in("actor") end)
+    elseif renderer.pending_action == "sam_scenein_player" then
         renderer.pending_action = nil
-        pcall(function() renderer.execute_sam_cast("app.ropeway.SurvivorAssignManager.CastingOrderPlayer") end)
+        pcall(function() renderer.execute_sam_scene_in("player") end)
+    elseif renderer.pending_action == "prefab_body_0" then
+        renderer.pending_action = nil
+        pcall(function() renderer.execute_direct_prefab_spawn("natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb") end)
+    elseif renderer.pending_action == "prefab_body_1" then
+        renderer.pending_action = nil
+        pcall(function() renderer.execute_direct_prefab_spawn("natives/x64/objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_1.pfb") end)
+    elseif renderer.pending_action == "prefab_pl1000" then
+        renderer.pending_action = nil
+        pcall(function() renderer.execute_direct_prefab_spawn("natives/x64/objectroot/prefab/character/survivor/pl1000.pfb") end)
     elseif renderer.pending_action == "check_survivors" then
         renderer.pending_action = nil
         pcall(renderer.check_active_survivors)
@@ -512,45 +600,45 @@ re.on_draw_ui(function()
     end
 
     imgui.separator()
-    imgui.text_colored("--- Step 1: The Understander & Diagnostics ---", 0.9, 0.9, 0.2, 1.0)
-    if imgui.button("Dump Full Reflection (SAM / SM / Standby)") then
+    imgui.text_colored("--- Pathway 1: Direct via.Prefab Spawner (Bypasses Story Locks) ---", 0.2, 1.0, 0.4, 1.0)
+    if imgui.button("Spawn Claire Body (Default Jacket: pl1000_body_0)") then
+        renderer.pending_action = "prefab_body_0"
+    end
+    imgui.same_line()
+    if imgui.button("Spawn Claire Body (Tank Top: pl1000_body_1)") then
+        renderer.pending_action = "prefab_body_1"
+    end
+
+    if imgui.button("Spawn Claire Root Prefab (pl1000.pfb)") then
+        renderer.pending_action = "prefab_pl1000"
+    end
+    imgui.same_line()
+    if imgui.button("Despawn Spawned Entity") then
+        renderer.pending_action = "despawn"
+    end
+
+    imgui.separator()
+    imgui.text_colored("--- Pathway 2: Native SAM Engine Casting (sceneIn) ---", 0.3, 0.8, 1.0, 1.0)
+    if imgui.button("SAM sceneIn: Claire NPC") then
+        renderer.pending_action = "sam_scenein_npc"
+    end
+    imgui.same_line()
+    if imgui.button("SAM sceneIn: Claire Actor") then
+        renderer.pending_action = "sam_scenein_actor"
+    end
+    imgui.same_line()
+    if imgui.button("SAM sceneIn: Claire Player") then
+        renderer.pending_action = "sam_scenein_player"
+    end
+
+    imgui.separator()
+    imgui.text_colored("--- Diagnostics & Subsystems ---", 0.9, 0.9, 0.2, 1.0)
+    if imgui.button("Dump Full Reflection & Prefab Lists") then
         renderer.deep_dump_sam()
     end
     imgui.same_line()
-    if imgui.button("Inspect Player 1 (Leon pl0000)") then
-        renderer.understand_player()
-    end
-    imgui.same_line()
-    if imgui.button("Query Active Survivors In World") then
+    if imgui.button("Query Active Characters in Scene") then
         renderer.pending_action = "check_survivors"
-    end
-
-    imgui.separator()
-    imgui.text_colored("--- Step 2: Native SAM Casting (Claire PL1000) ---", 0.2, 1.0, 0.4, 1.0)
-    if imgui.button("Exp 1A: Test SAM Transaction (Verify)") then
-        renderer.pending_action = "sam"
-    end
-    imgui.same_line()
-    if imgui.button("Exp 1B: Cast Claire via CastingOrderNpc") then
-        renderer.pending_action = "sam_cast_npc"
-    end
-
-    if imgui.button("Exp 1C: Cast Claire via CastingOrderActor") then
-        renderer.pending_action = "sam_cast_actor"
-    end
-    imgui.same_line()
-    if imgui.button("Exp 1D: Cast Claire via CastingOrderPlayer") then
-        renderer.pending_action = "sam_cast_player"
-    end
-
-    imgui.separator()
-    imgui.text_colored("--- Cleanup & Deprecated ---", 0.6, 0.6, 0.6, 1.0)
-    if imgui.button("Despawn Test Character") then
-        renderer.pending_action = "despawn"
-    end
-    imgui.same_line()
-    if imgui.button("Exp 2: Duplicate Leon (Deprecated)") then
-        renderer.pending_action = "duplicate"
     end
 
     imgui.separator()
