@@ -13,6 +13,12 @@ local function log_msg(str)
     if f then
         f:write(os.date("[%Y-%m-%d %H:%M:%S] [Renderer] ") .. tostring(str) .. "\n")
         f:close()
+    else
+        local f2 = io.open("renderer_log.txt", "a")
+        if f2 then
+            f2:write(os.date("[%Y-%m-%d %H:%M:%S] [Renderer] ") .. tostring(str) .. "\n")
+            f2:close()
+        end
     end
 end
 
@@ -22,10 +28,11 @@ local renderer = {}
 renderer.spawned_entity = nil
 renderer.diagnostic_log = {}
 renderer.last_status = "Ready - Standing by"
+renderer.pending_action = nil -- Thread-safe action queue for re.on_frame
 
 local function add_diag(text)
     table.insert(renderer.diagnostic_log, 1, os.date("[%H:%M:%S] ") .. text)
-    if #renderer.diagnostic_log > 15 then
+    if #renderer.diagnostic_log > 30 then
         table.remove(renderer.diagnostic_log)
     end
     log_msg(text)
@@ -101,31 +108,35 @@ function renderer.understand_player()
         return
     end
 
+    local player_td = player:get_type_definition()
+    add_diag(string.format("Player Managed Class: '%s'", player_td and player_td:get_full_name() or "Unknown"))
+
+    -- Dump relevant fields on Player object (Body, Costume, Parts, Mesh)
+    if player_td then
+        local fields = player_td:get_fields() or {}
+        add_diag(string.format("Player class has %d fields. Scanning for model/mesh/costume references...", #fields))
+        for _, f in ipairs(fields) do
+            local fname = f:get_name()
+            local ftype = f:get_type()
+            local ftname = ftype and ftype:get_full_name() or ""
+            local lower_name = string.lower(fname)
+            if string.find(lower_name, "body") or string.find(lower_name, "costume") or string.find(lower_name, "part") or string.find(lower_name, "mesh") or string.find(lower_name, "visual") or string.find(lower_name, "model") or string.find(lower_name, "figure") then
+                local val = nil
+                pcall(function() val = f:get_data(player) end)
+                add_diag(string.format("   -> Field: %s (%s) = %s", fname, ftname, tostring(val)))
+            end
+        end
+    end
+
     local go = renderer.get_player_game_object(player)
     if not go then
         add_diag("ERROR: Player GameObject not found.")
         return
     end
 
-    add_diag(string.format("Player GameObject Name: '%s'", tostring(go.call and go:call("get_Name"))))
+    add_diag(string.format("Player Root GameObject: '%s'", tostring(go.call and go:call("get_Name"))))
 
-    -- List components
-    local comps = nil
-    pcall(function()
-        if go.get_components then comps = go:get_components() end
-    end)
-
-    if comps and #comps > 0 then
-        add_diag(string.format("Player has %d components attached:", #comps))
-        for i, c in ipairs(comps) do
-            local td = c:get_type_definition()
-            add_diag(string.format("   [%d] %s", i, td and td:get_full_name() or "Unknown"))
-        end
-    else
-        add_diag("Could not enumerate components directly via get_components.")
-    end
-
-    -- Inspect Mesh component
+    -- Check Mesh component on Root
     local mesh_td = sdk.find_type_definition("via.render.Mesh")
     if mesh_td then
         local mesh = nil
@@ -133,65 +144,113 @@ function renderer.understand_player()
         if mesh then
             local draw_mesh = false
             pcall(function() draw_mesh = mesh:call("get_DrawMesh") end)
-            add_diag(string.format("Player Mesh Component: DrawMesh=%s", tostring(draw_mesh)))
+            add_diag(string.format("Root Mesh Component: DrawMesh=%s", tostring(draw_mesh)))
         else
-            add_diag("Player Mesh Component: NOT FOUND on root GameObject")
+            add_diag("Root Mesh Component: None on root (Meshes are managed by Character Parts)")
         end
     end
 
-    -- Inspect Motion component
+    -- Check Motion on Root
     local motion_td = sdk.find_type_definition("via.motion.Motion")
     if motion_td then
         local motion = nil
         pcall(function() motion = go:call("getComponent(System.Type)", motion_td:get_runtime_type()) end)
         if motion then
-            add_diag("Player Motion Component: PRESENT and active.")
+            add_diag("Root Motion Component: ACTIVE (Drives animation skeleton)")
         end
     end
 end
 
-function renderer.understand_subsystems()
-    add_diag("Running Understander: Inspecting Survivor Subsystems...")
-    local types = {
+function renderer.deep_dump_sam()
+    log_msg("--- STARTING DEEP DUMP OF SAM & SURVIVOR SUBSYSTEMS ---")
+    local dump_lines = {}
+    local function dlog(str)
+        table.insert(dump_lines, str)
+        log_msg(str)
+    end
+
+    local types_to_dump = {
         "app.ropeway.SurvivorAssignManager",
         "app.ropeway.SurvivorAssignManager.CastingOrder",
         "app.ropeway.SurvivorAssignManager.CastingOrderNpc",
         "app.ropeway.SurvivorAssignManager.CastingOrderActor",
-        "app.ropeway.SurvivorStandbyCatalog",
+        "app.ropeway.SurvivorAssignManager.CastingOrderPlayer",
+        "app.ropeway.SurvivorAssignManager.CastingReason",
+        "app.ropeway.SurvivorAssignManager.TransactionOption",
+        "app.ropeway.SurvivorAssignManager.OfferMode",
+        "app.ropeway.SurvivorAssignManager.CastingStatus",
+        "app.ropeway.SurvivorAssignManager.Phase",
+        "app.ropeway.SurvivorAssignManager.CastingOrderResult",
+        "app.ropeway.SurvivorAssignManager.CastingRequestResult",
+        "app.ropeway.SurvivorDefine",
+        "app.ropeway.SurvivorDefine.SurvivorType",
+        "app.ropeway.SurvivorDefine.Costume",
         "app.ropeway.SurvivorManager",
-        "app.ropeway.PlayerManager"
+        "app.ropeway.level.SurvivorStandbyManger",
+        "app.ropeway.SurvivorStandbyCatalog",
+        "app.ropeway.SurvivorFolderSetting",
+        "app.ropeway.SurvivorCast"
     }
 
-    for _, tname in ipairs(types) do
+    for _, tname in ipairs(types_to_dump) do
         local td = sdk.find_type_definition(tname)
-        if td then
-            local methods = td:get_methods() or {}
+        if not td then
+            dlog("[DUMP] Type NOT FOUND: " .. tname)
+        else
+            dlog(string.format("[DUMP] === TYPE: %s ===", tname))
             local fields = td:get_fields() or {}
-            add_diag(string.format("FOUND %s: %d methods, %d fields", tname, #methods, #fields))
+            dlog(string.format("[DUMP]   Fields (%d):", #fields))
+            for _, f in ipairs(fields) do
+                local ftype = f:get_type()
+                local ftname = ftype and ftype:get_full_name() or "unknown"
+                dlog(string.format("[DUMP]     %s %s (static=%s)", ftname, f:get_name(), tostring(f:is_static())))
+            end
+
+            local methods = td:get_methods() or {}
+            dlog(string.format("[DUMP]   Methods (%d):", #methods))
             for _, m in ipairs(methods) do
                 local mname = m:get_name()
-                if string.find(string.lower(mname), "cast") or string.find(string.lower(mname), "order") or string.find(string.lower(mname), "request") or string.find(string.lower(mname), "create") then
-                    add_diag(string.format("   -> Method: %s (%d params)", mname, m:get_num_params()))
+                local rtype = m:get_return_type()
+                local rtname = rtype and rtype:get_full_name() or "void"
+                local params = {}
+                for _, pt in ipairs(m:get_param_types() or {}) do
+                    table.insert(params, pt:get_full_name())
                 end
+                dlog(string.format("[DUMP]     %s %s(%s) (static=%s)", rtname, mname, table.concat(params, ", "), tostring(m:is_static())))
             end
-        else
-            add_diag("NOT FOUND: " .. tname)
         end
     end
 
     local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
-    add_diag("SurvivorAssignManager Singleton: " .. (sam and "ONLINE" or "OFFLINE"))
+    if sam then
+        dlog("[DUMP] === LIVE SAM SINGLETON INSTANCE DATA ===")
+        local sam_td = sam:get_type_definition()
+        if sam_td then
+            for _, f in ipairs(sam_td:get_fields() or {}) do
+                if not f:is_static() then
+                    local ok, val = pcall(function() return f:get_data(sam) end)
+                    if ok then
+                        dlog(string.format("[DUMP]   SAM.%s = %s", f:get_name(), tostring(val)))
+                    end
+                end
+            end
+        end
+    end
+    dlog("--- COMPLETED DEEP DUMP OF SAM & SURVIVOR SUBSYSTEMS ---")
+end
 
-    local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
-    add_diag("SurvivorManager Singleton: " .. (sm and "ONLINE" or "OFFLINE"))
+function renderer.understand_subsystems()
+    add_diag("Running Understander: Inspecting Survivor Subsystems...")
+    renderer.deep_dump_sam()
+    add_diag("SAM Deep Dump complete. Check re2_framework_log.txt.")
 end
 
 -- =========================================================================
--- 4. The "RENDERER": Isolated Spawning Experiments
+-- 4. The "RENDERER": Safe Execution on Game Logic Thread (re.on_frame)
 -- =========================================================================
 
--- Clean up any previous test entity
-function renderer.despawn_test_entity()
+-- Clean up any previous test entity safely
+function renderer.execute_despawn()
     if renderer.spawned_entity then
         add_diag("Despawning active test entity...")
         pcall(function()
@@ -211,160 +270,230 @@ function renderer.despawn_test_entity()
     end
 end
 
--- Experiment 1: Native SurvivorAssignManager Casting
-function renderer.test_native_casting()
-    renderer.despawn_test_entity()
-    add_diag("Attempting Experiment 1: Native SurvivorAssignManager Casting...")
+-- Safe Duplication executed on logic tick (prevents D3D12 Present 87a0001 error)
+function renderer.execute_duplication()
+    add_diag("NOTICE: Duplicate GameObject is deprecated due to D3D12 device resets.")
+    add_diag("RE Engine player singletons cannot be cloned via duplicateGameObject.")
+    add_diag("Use Native SAM Casting (Experiment 1) instead.")
+    renderer.last_status = "Duplication Deprecated - Use Native SAM"
+end
+
+-- Safe Native SAM Transaction executed on logic tick
+function renderer.execute_sam_transaction()
+    add_diag("Executing Native SurvivorAssignManager Transaction Check...")
 
     local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
     if not sam then
-        add_diag("FAIL: SurvivorAssignManager singleton not active in this scene.")
-        renderer.last_status = "Failed: SurvivorAssignManager is nil"
+        add_diag("FAIL: SurvivorAssignManager singleton not active.")
+        renderer.last_status = "Failed: SAM is nil"
         return
     end
 
-    -- Check available casting methods on SAM
-    local sam_td = sam:get_type_definition()
-    local methods = sam_td:get_methods()
-    add_diag("Inspecting SAM methods for casting trigger...")
-    local casting_order_method = nil
-    for _, m in ipairs(methods) do
-        local n = m:get_name()
-        if string.find(string.lower(n), "casting") or string.find(string.lower(n), "request") then
-            add_diag(string.format("SAM method: %s (%d params)", n, m:get_num_params()))
-            if not casting_order_method then casting_order_method = m end
-        end
-    end
-
-    renderer.last_status = "SAM inspected - Check log for method signatures"
-end
-
--- Experiment 2: Character Duplication Directly In Front of Leon
-function renderer.test_character_duplication()
-    renderer.despawn_test_entity()
-    add_diag("Attempting Experiment 2: Character Duplication in Viewport...")
-
-    local player = renderer.get_master_player()
-    local player_go = renderer.get_player_game_object(player)
-    if not player_go then
-        add_diag("FAIL: Master player GameObject not resolved.")
-        renderer.last_status = "Failed: Player GO not found"
-        return
-    end
-
-    local player_tf = player_go:call("get_Transform")
-    if not player_tf then
-        add_diag("FAIL: Player Transform not resolved.")
-        renderer.last_status = "Failed: Player Transform not found"
-        return
-    end
-
-    -- Spawn position: 2.0 meters directly IN FRONT of Leon!
-    local front_pos = get_front_spawn_position(player_tf, 2.0)
-    add_diag(string.format("Calculated Viewport Spawn Target: (%.2f, %.2f, %.2f)", front_pos.x, front_pos.y, front_pos.z))
-
-    local scene_man = sdk.get_native_singleton("via.SceneManager")
-    local cur_scene = scene_man and scene_man:call("get_CurrentScene")
-    if not cur_scene then
-        add_diag("FAIL: via.Scene not available.")
-        renderer.last_status = "Failed: Scene not found"
-        return
-    end
-
-    local clone = nil
-    local ok1 = pcall(function()
-        clone = cur_scene:call("duplicateGameObject(via.GameObject)", player_go)
-    end)
-    if not ok1 or not clone then
-        pcall(function() clone = cur_scene:call("duplicateGameObject", player_go) end)
-    end
-
-    if not clone then
-        add_diag("FAIL: duplicateGameObject returned nil.")
-        renderer.last_status = "Failed: duplicateGameObject returned nil"
-        return
-    end
-
-    pcall(function() clone:add_ref() end)
-
-    -- Move clone to front position
-    local clone_tf = clone:call("get_Transform")
-    if clone_tf then
-        clone_tf:call("set_Position", front_pos)
-        add_diag("Repositioned clone 2.0m directly in front of Leon.")
-    end
-
-    -- Ensure mesh is drawing
+    local ok_tx = false
     pcall(function()
-        clone:call("set_DrawSelf", true)
-        clone:call("set_UpdateSelf", true)
-        local mesh_td = sdk.find_type_definition("via.render.Mesh")
-        if mesh_td then
-            local mesh = clone:call("getComponent(System.Type)", mesh_td:get_runtime_type())
-            if mesh then
-                mesh:call("set_DrawMesh", true)
-                mesh:set_field("Enabled", true)
-                add_diag("Forced set_DrawMesh(true) on clone Mesh component.")
-            end
-        end
+        sam:call("beginRequestTransaction(app.ropeway.SurvivorAssignManager.TransactionOption)", 0)
+        add_diag("Transaction: beginRequestTransaction(0 [None]) success.")
+        ok_tx = true
     end)
 
-    -- Disable gamepad input mirroring on clone
-    local input_td = sdk.find_type_definition("app.ropeway.survivor.PlayerInputReceiver")
-                  or sdk.find_type_definition("app.ropeway.PlayerInputReceiver")
-    if input_td then
+    if not ok_tx then
         pcall(function()
-            local inp = clone:call("getComponent(System.Type)", input_td:get_runtime_type())
-            if inp then inp:set_field("Enabled", false) end
+            sam:call("beginRequestTransaction", 0)
+            add_diag("Transaction: beginRequestTransaction(0) fallback success.")
+            ok_tx = true
         end)
     end
 
-    renderer.spawned_entity = clone
-    renderer.last_status = "SUCCESS: Cloned Player In Front of Leon"
-    add_diag("SUCCESS: Cloned entity placed in viewport! Look directly ahead.")
+    if ok_tx then
+        pcall(function()
+            sam:call("endRequestTransaction")
+            add_diag("Transaction: endRequestTransaction() success.")
+        end)
+        renderer.last_status = "SAM Transaction Ready & Verified"
+    else
+        renderer.last_status = "Failed to begin SAM Transaction"
+    end
 end
 
--- Experiment 3: Swap Clone Costume/Model to Claire (PL1000)
-function renderer.test_costume_swap()
-    if not renderer.spawned_entity then
-        add_diag("ERROR: No active test entity spawned. Run Experiment 2 first.")
-        renderer.last_status = "Error: Spawn entity first"
-        return
-    end
-
-    add_diag("Attempting Experiment 3: Swapping Clone to Claire (PL1000)...")
+-- Check Active Survivors across SurvivorManager
+function renderer.check_active_survivors()
     local survivor_man = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
     if not survivor_man then
-        add_diag("FAIL: SurvivorManager singleton not available.")
-        renderer.last_status = "Failed: SurvivorManager is nil"
+        add_diag("SurvivorManager singleton not available.")
         return
     end
 
-    local swapped = false
-    -- Try requestCostumeChange(clone, 1) -> 1 = Claire
-    pcall(function()
-        survivor_man:call("requestCostumeChange", renderer.spawned_entity, 1)
-        swapped = true
-        add_diag("Called SurvivorManager:requestCostumeChange(clone, 1 [Claire]).")
-    end)
+    add_diag("Querying SurvivorManager for active survivors (0=Leon, 1=Claire, 2=Ada, 3=Sherry)...")
+    for i = 0, 3 do
+        local s = nil
+        pcall(function() s = survivor_man:call("getSurvivor(app.ropeway.SurvivorDefine.SurvivorType)", i) end)
+        if not s then
+            pcall(function() s = survivor_man:call("getSurvivor", i) end)
+        end
+        if not s then
+            pcall(function() s = survivor_man:call("getSurvivorCharacter(app.ropeway.SurvivorDefine.SurvivorType)", i) end)
+        end
+        if not s then
+            pcall(function() s = survivor_man:call("getSurvivorCharacter", i) end)
+        end
 
-    if not swapped then
+        if s then
+            local go = nil
+            pcall(function() go = s:call("get_GameObject") end)
+            local goname = (go and go.call and go:call("get_Name")) or tostring(s)
+            add_diag(string.format("  -> SurvivorType %d: ACTIVE (%s)", i, tostring(goname)))
+            if i == 1 then
+                renderer.spawned_entity = go or s
+                renderer.last_status = "CLAIRE REDFIELD ACTIVE IN WORLD!"
+            end
+        else
+            add_diag(string.format("  -> SurvivorType %d: not active", i))
+        end
+    end
+end
+
+-- Native SAM Casting Order for Claire (PL1000)
+function renderer.execute_sam_cast(order_type_name)
+    order_type_name = order_type_name or "app.ropeway.SurvivorAssignManager.CastingOrderNpc"
+    add_diag("==================================================")
+    add_diag("Initiating Native SAM Casting: Claire PL1000 via " .. order_type_name)
+
+    local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
+    if not sam then
+        add_diag("FAIL: SurvivorAssignManager singleton not active.")
+        renderer.last_status = "Failed: SAM is nil"
+        return
+    end
+
+    local order_td = sdk.find_type_definition(order_type_name)
+    if not order_td then
+        add_diag("FAIL: Order Type Definition not found: " .. order_type_name)
+        renderer.last_status = "Failed: Type definition missing"
+        return
+    end
+
+    local order = nil
+    local ok_c = pcall(function()
+        order = sdk.create_instance(order_type_name):add_ref()
+    end)
+    if not ok_c or not order then
+        add_diag("FAIL: Failed to create instance of " .. order_type_name)
+        renderer.last_status = "Failed to create order instance"
+        return
+    end
+    add_diag("Successfully created order instance: " .. order_type_name)
+
+    -- Configure order fields
+    local curr_td = order_td
+    while curr_td do
+        for _, f in ipairs(curr_td:get_fields() or {}) do
+            local fname = f:get_name()
+            local lower = string.lower(fname)
+            local ftype = f:get_type()
+            local ftname = ftype and ftype:get_full_name() or ""
+
+            -- Match SurvivorType
+            if string.find(lower, "survivortype") or (string.find(lower, "type") and string.find(ftname, "SurvivorType")) then
+                pcall(function() f:set_data(order, 1) end)
+                add_diag(string.format("  Configured field: %s = 1 (Claire Redfield)", fname))
+            elseif string.find(lower, "reason") or string.find(ftname, "CastingReason") then
+                pcall(function() f:set_data(order, 1) end) -- 1 = InitialSet / Normal
+                add_diag(string.format("  Configured field: %s = 1 (Reason)", fname))
+            elseif string.find(lower, "costume") or string.find(ftname, "Costume") then
+                pcall(function() f:set_data(order, 0) end) -- 0 = Default
+                add_diag(string.format("  Configured field: %s = 0 (Default Costume)", fname))
+            end
+        end
+        curr_td = curr_td:get_parent_type()
+    end
+
+    -- Step A: Begin Request Transaction
+    local ok_tx = false
+    pcall(function()
+        sam:call("beginRequestTransaction(app.ropeway.SurvivorAssignManager.TransactionOption)", 0)
+        ok_tx = true
+    end)
+    if not ok_tx then
         pcall(function()
-            survivor_man:call("changeCostume", renderer.spawned_entity, 1)
-            swapped = true
-            add_diag("Called SurvivorManager:changeCostume(clone, 1 [Claire]).")
+            sam:call("beginRequestTransaction", 0)
+            ok_tx = true
+        end)
+    end
+    add_diag("SAM Transaction Opened: " .. tostring(ok_tx))
+
+    -- Step B: Build Current Request
+    local ok_bld = false
+    pcall(function()
+        sam:call("buildCurrentRequest(app.ropeway.SurvivorAssignManager.CastingOrder)", order)
+        ok_bld = true
+        add_diag("SAM: buildCurrentRequest(CastingOrder) succeeded.")
+    end)
+    if not ok_bld then
+        pcall(function()
+            sam:call("buildCurrentRequest", order)
+            ok_bld = true
+            add_diag("SAM: buildCurrentRequest fallback succeeded.")
         end)
     end
 
-    if swapped then
-        renderer.last_status = "Costume Swap Requested (Check Viewport)"
+    -- Step C: End Request Transaction
+    local ok_end = false
+    pcall(function()
+        sam:call("endRequestTransaction")
+        ok_end = true
+        add_diag("SAM: endRequestTransaction() succeeded.")
+    end)
+
+    -- Step D: Process Waiting Requests
+    pcall(function()
+        sam:call("onUpdateWaitingRequest")
+        add_diag("SAM: onUpdateWaitingRequest() triggered.")
+    end)
+
+    if ok_bld and ok_end then
+        renderer.last_status = "SAM Casting Order Queued (" .. order_type_name .. ")"
+        add_diag("SUCCESS: Claire PL1000 casting order committed.")
+        renderer.check_active_survivors()
     else
-        renderer.last_status = "Costume Swap Failed"
+        renderer.last_status = "SAM Casting Order Failed"
+        add_diag(string.format("FAIL: build=%s, end=%s", tostring(ok_bld), tostring(ok_end)))
     end
+    add_diag("==================================================")
 end
 
 -- =========================================================================
--- 5. ImGui Control Panel & HUD
+-- 5. Master Logic Loop (re.on_frame) — Thread-safe execution
+-- =========================================================================
+re.on_frame(function()
+    if renderer.pending_action == "duplicate" then
+        renderer.pending_action = nil
+        pcall(renderer.execute_duplication)
+    elseif renderer.pending_action == "costume" then
+        renderer.pending_action = nil
+        pcall(renderer.execute_costume_swap)
+    elseif renderer.pending_action == "sam" then
+        renderer.pending_action = nil
+        pcall(renderer.execute_sam_transaction)
+    elseif renderer.pending_action == "sam_cast_npc" then
+        renderer.pending_action = nil
+        pcall(function() renderer.execute_sam_cast("app.ropeway.SurvivorAssignManager.CastingOrderNpc") end)
+    elseif renderer.pending_action == "sam_cast_actor" then
+        renderer.pending_action = nil
+        pcall(function() renderer.execute_sam_cast("app.ropeway.SurvivorAssignManager.CastingOrderActor") end)
+    elseif renderer.pending_action == "sam_cast_player" then
+        renderer.pending_action = nil
+        pcall(function() renderer.execute_sam_cast("app.ropeway.SurvivorAssignManager.CastingOrderPlayer") end)
+    elseif renderer.pending_action == "check_survivors" then
+        renderer.pending_action = nil
+        pcall(renderer.check_active_survivors)
+    elseif renderer.pending_action == "despawn" then
+        renderer.pending_action = nil
+        pcall(renderer.execute_despawn)
+    end
+end)
+
+-- =========================================================================
+-- 6. ImGui Control Panel & HUD
 -- =========================================================================
 re.on_draw_ui(function()
     imgui.text_colored("=== RE2 CHARACTER RENDERER & UNDERSTANDER ===", 0.3, 0.9, 1.0, 1.0)
@@ -383,31 +512,45 @@ re.on_draw_ui(function()
     end
 
     imgui.separator()
-    imgui.text_colored("--- Step 1: The Understander ---", 0.9, 0.9, 0.2, 1.0)
-    if imgui.button("Inspect Player 1 (Leon Components)") then
+    imgui.text_colored("--- Step 1: The Understander & Diagnostics ---", 0.9, 0.9, 0.2, 1.0)
+    if imgui.button("Dump Full Reflection (SAM / SM / Standby)") then
+        renderer.deep_dump_sam()
+    end
+    imgui.same_line()
+    if imgui.button("Inspect Player 1 (Leon pl0000)") then
         renderer.understand_player()
     end
     imgui.same_line()
-    if imgui.button("Inspect Survivor Subsystems (SAM / SM)") then
-        renderer.understand_subsystems()
+    if imgui.button("Query Active Survivors In World") then
+        renderer.pending_action = "check_survivors"
     end
 
     imgui.separator()
-    imgui.text_colored("--- Step 2: The Renderer Experiments ---", 0.2, 1.0, 0.4, 1.0)
-    if imgui.button("Experiment 2: Duplicate Leon In Front (2.0m)") then
-        renderer.test_character_duplication()
+    imgui.text_colored("--- Step 2: Native SAM Casting (Claire PL1000) ---", 0.2, 1.0, 0.4, 1.0)
+    if imgui.button("Exp 1A: Test SAM Transaction (Verify)") then
+        renderer.pending_action = "sam"
     end
     imgui.same_line()
-    if imgui.button("Experiment 3: Swap Clone to Claire (PL1000)") then
-        renderer.test_costume_swap()
+    if imgui.button("Exp 1B: Cast Claire via CastingOrderNpc") then
+        renderer.pending_action = "sam_cast_npc"
     end
 
-    if imgui.button("Experiment 1: Test Native SAM Casting") then
-        renderer.test_native_casting()
+    if imgui.button("Exp 1C: Cast Claire via CastingOrderActor") then
+        renderer.pending_action = "sam_cast_actor"
     end
     imgui.same_line()
+    if imgui.button("Exp 1D: Cast Claire via CastingOrderPlayer") then
+        renderer.pending_action = "sam_cast_player"
+    end
+
+    imgui.separator()
+    imgui.text_colored("--- Cleanup & Deprecated ---", 0.6, 0.6, 0.6, 1.0)
     if imgui.button("Despawn Test Character") then
-        renderer.despawn_test_entity()
+        renderer.pending_action = "despawn"
+    end
+    imgui.same_line()
+    if imgui.button("Exp 2: Duplicate Leon (Deprecated)") then
+        renderer.pending_action = "duplicate"
     end
 
     imgui.separator()
@@ -418,3 +561,4 @@ re.on_draw_ui(function()
 end)
 
 log_msg("Character Renderer Harness initialized.")
+pcall(renderer.deep_dump_sam)
