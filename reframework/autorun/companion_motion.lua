@@ -16,16 +16,12 @@ motion.comp_pos = { x = 0.0, y = 0.0, z = 0.0 }
 motion.leon_pos = { x = 0.0, y = 0.0, z = 0.0 }
 motion.last_time = nil
 motion.inspected_companion = false
-motion.inspected_player = false
+motion.revealed_frames = 0
 
 -- Discovered Components
 motion.comp_motion = nil
 motion.comp_motion_fsm = nil
-motion.comp_char_ctrl = nil
 motion.comp_mesh_parts_ctrl = nil
-motion.leon_motion = nil
-motion.leon_bank_id = nil
-motion.leon_motion_id = nil
 
 -- Trail / Breadcrumb Navigation
 motion.trail = {}
@@ -33,9 +29,9 @@ local MAX_TRAIL_POINTS = 40
 local TRAIL_RECORD_DIST = 0.30  -- Record a point every 30cm moved by Leon
 local TARGET_FOLLOW_DIST = 1.60 -- Target point along trail behind Leon
 local STOP_DIST = 1.20          -- Idle if within 1.20m of Leon
-local WALK_SPEED = 2.0          -- Natural walk speed (m/s)
-local RUN_SPEED = 4.0           -- Jog/Run speed (m/s)
-local RUN_THRESHOLD = 3.2       -- Start jogging if Leon is > 3.2m away
+local WALK_SPEED = 2.0          -- Natural gliding walk speed (m/s)
+local RUN_SPEED = 4.2           -- Gliding catch-up speed (m/s)
+local RUN_THRESHOLD = 3.2       -- Start sprinting if Leon is > 3.2m away
 local TELEPORT_DIST = 18.0      -- Snap-teleport if separated by elevator/door
 
 local function log_debug(msg)
@@ -99,11 +95,11 @@ local function set_transform_position(tf, x, y, z)
     local v3 = Vector3f and Vector3f.new and Vector3f.new(x, y, z)
 
     if v4 and tf.set_position then
-        local ok1 = pcall(function() tf:set_position(v4, false) end)
+        local ok1 = pcall(function() tf:set_position(v4) end)
         if ok1 then return true end
     end
     if v3 and tf.set_position then
-        local ok2 = pcall(function() tf:set_position(v3, false) end)
+        local ok2 = pcall(function() tf:set_position(v3) end)
         if ok2 then return true end
     end
     if tf.call then
@@ -211,9 +207,9 @@ local function get_player_transform(player)
 end
 
 -- =========================================================================
--- 3. Visual Reveal Engine & Hierarchy Inspection
+-- 3. Mesh & Parts Force-Reveal Engine
 -- =========================================================================
-local function force_reveal_hierarchy(root_go)
+local function force_reveal_all(root_go)
     if not root_go then return end
 
     local function process_go(go)
@@ -236,17 +232,17 @@ local function force_reveal_hierarchy(root_go)
                     pcall(function() c:call("set_Enabled", true) end)
                     pcall(function() c:call("set_DrawMesh", true) end)
                     pcall(function()
-                        local mat_count = c:call("get_MaterialNum") or 0
-                        for i = 0, mat_count - 1 do
-                            pcall(function() c:call("setMaterialsEnable(System.Int32, System.Boolean)", i, true) end)
-                            pcall(function() c:call("setMaterialsEnable", i, true) end)
-                        end
-                    end)
-                    pcall(function()
                         local mesh_count = c:call("get_MeshNum") or 0
                         for i = 0, mesh_count - 1 do
                             pcall(function() c:call("setMeshEnable(System.Int32, System.Boolean)", i, true) end)
                             pcall(function() c:call("setMeshEnable", i, true) end)
+                        end
+                    end)
+                    pcall(function()
+                        local mat_count = c:call("get_MaterialNum") or 0
+                        for j = 0, mat_count - 1 do
+                            pcall(function() c:call("setMaterialsEnable(System.Int32, System.Boolean)", j, true) end)
+                            pcall(function() c:call("setMaterialsEnable", j, true) end)
                         end
                     end)
                 end
@@ -258,11 +254,23 @@ local function force_reveal_hierarchy(root_go)
                 if tname:find("SurvivorMeshPartsController") then
                     motion.comp_mesh_parts_ctrl = c
                     pcall(function() c:call("set_Enabled", true) end)
-                    pcall(function() c:call("setAllPartsEnable", true) end)
-                    pcall(function() c:call("setPartsEnable", true) end)
-                    pcall(function() c:call("showAll") end)
-                    pcall(function() c:call("apply") end)
-                    pcall(function() c:call("update") end)
+                    pcall(function() c:call("set_PartsForm", 0) end)
+                    pcall(function() c:call("set_PartsForm", 1) end)
+                    pcall(function() c:call("updateMeshPartsSettings") end)
+                    pcall(function() c:call("updateScenarioSettings") end)
+                    pcall(function() c:call("updateVariableSettings") end)
+
+                    pcall(function()
+                        local parts_arr = c:call("get_Parts")
+                        if parts_arr and parts_arr.get_elements then
+                            for _, p in ipairs(parts_arr:get_elements()) do
+                                if p and p.call then
+                                    pcall(function() p:call("set_Enable", true) end)
+                                    pcall(function() p:call("set_IsEnable", true) end)
+                                end
+                            end
+                        end
+                    end)
                 end
             end
         end
@@ -286,37 +294,59 @@ local function force_reveal_hierarchy(root_go)
     process_go(root_go)
 end
 
-local function inspect_reflection_types()
-    pcall(function()
-        local smpc_td = sdk.find_type_definition("app.ropeway.survivor.SurvivorMeshPartsController")
-        if smpc_td then
-            log_debug("--- [Reflection] SurvivorMeshPartsController Methods ---")
-            for _, m in ipairs(smpc_td:get_methods() or {}) do
-                log_debug(string.format("  Method: %s (%d params)", m:get_name(), m:get_num_params()))
-            end
-        end
-    end)
-end
-
+-- =========================================================================
+-- 4. Deep Inspection of SurvivorMeshPartsController & Mesh Data
+-- =========================================================================
 local function inspect_claire_anatomy(body_go)
     if motion.inspected_companion or not body_go then return end
     motion.inspected_companion = true
 
-    log_debug("--- DISCOVERING CLAIRE (COMPANION) ANATOMY ---")
-    inspect_reflection_types()
-
-    -- Run force reveal on body and all spawned parts
-    force_reveal_hierarchy(body_go)
-    local parts = _G.DuoMode and _G.DuoMode.get_companion_parts and _G.DuoMode.get_companion_parts() or {}
-    for _, part_go in ipairs(parts) do
-        force_reveal_hierarchy(part_go)
+    log_debug("--- DISCOVERING CLAIRE RED JACKET ANATOMY ---")
+    local smpc = nil
+    pcall(function()
+        smpc = body_go:call("getComponent(System.Type)", sdk.typeof("app.ropeway.survivor.SurvivorMeshPartsController"))
+    end)
+    if smpc then
+        log_debug("  [SurvivorMeshPartsController Found on Body]")
+        pcall(function()
+            local form = smpc:call("get_PartsForm")
+            log_debug("  Current PartsForm: " .. tostring(form))
+            local names = smpc:call("get_PartsNames")
+            if names and names.get_elements then
+                for idx, n in ipairs(names:get_elements()) do
+                    log_debug(string.format("    PartName [%d]: %s", idx, tostring(n)))
+                end
+            end
+        end)
     end
-    log_debug(string.format("Force reveal executed across %d companion parts.", #parts))
+
+    local mesh = nil
+    pcall(function()
+        mesh = body_go:call("getComponent(System.Type)", sdk.typeof("via.render.Mesh"))
+    end)
+    if mesh then
+        log_debug("  [via.render.Mesh Found on Body]")
+        pcall(function()
+            local m_num = mesh:call("get_MeshNum") or 0
+            local mat_num = mesh:call("get_MaterialNum") or 0
+            log_debug(string.format("  MeshNum: %d | MaterialNum: %d", m_num, mat_num))
+            for i = 0, m_num - 1 do
+                local en = mesh:call("getMeshEnable", i)
+                log_debug(string.format("    Submesh [%d] Enabled: %s", i, tostring(en)))
+            end
+        end)
+    end
+
+    force_reveal_all(body_go)
+    local parts = _G.DuoMode and _G.DuoMode.get_companion_parts and _G.DuoMode.get_companion_parts() or {}
+    for _, p in ipairs(parts) do
+        force_reveal_all(p)
+    end
     log_debug("-----------------------------------------------")
 end
 
 -- =========================================================================
--- 4. Breadcrumb Trail Navigation Engine (Corridor & Hallway Safe)
+-- 5. Breadcrumb Trail Navigation Engine (Corridor & Hallway Safe)
 -- =========================================================================
 local function update_leon_trail(leon_pos)
     if not leon_pos then return end
@@ -359,7 +389,7 @@ local function get_target_waypoint_along_trail(leon_pos, comp_pos)
 end
 
 -- =========================================================================
--- 5. Companion Locomotion & Gliding Execution Loop
+-- 6. Companion Locomotion & Gliding Execution Loop
 -- =========================================================================
 local function update_companion_motion(delta_time)
     if not motion.enabled then
@@ -381,6 +411,14 @@ local function update_companion_motion(delta_time)
     if not player_tf or not body_tf then return end
 
     inspect_claire_anatomy(body_go)
+
+    -- Periodically reinforce visual reveal every 60 frames (1 sec)
+    motion.revealed_frames = motion.revealed_frames + 1
+    if motion.revealed_frames % 60 == 0 then
+        force_reveal_all(body_go)
+        local parts = _G.DuoMode and _G.DuoMode.get_companion_parts and _G.DuoMode.get_companion_parts() or {}
+        for _, p in ipairs(parts) do force_reveal_all(p) end
+    end
 
     local leon_pos = get_transform_position(player_tf)
     local comp_pos = get_transform_position(body_tf)
@@ -406,7 +444,7 @@ local function update_companion_motion(delta_time)
         return
     end
 
-    -- 3. Waypoint along breadcrumb trail
+    -- 3. Waypoint along trail
     local target_wp = get_target_waypoint_along_trail(leon_pos, comp_pos)
     local dx = target_wp.x - comp_pos.x
     local dz = target_wp.z - comp_pos.z
@@ -461,7 +499,7 @@ local function update_companion_motion(delta_time)
 end
 
 -- =========================================================================
--- 6. Master Frame Loop (re.on_frame)
+-- 7. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
     local now = os.clock()
@@ -475,13 +513,13 @@ re.on_frame(function()
 end)
 
 -- =========================================================================
--- 7. ImGui UI Panel
+-- 8. ImGui UI Panel
 -- =========================================================================
 local function draw_motion_ui(suffix)
     suffix = suffix or ""
-    imgui.text_colored("=== RE2 DUO MODE: COMPANION MOTION ===", 0.3, 0.9, 1.0, 1.0)
+    imgui.text_colored("=== RE2 DUO MODE: CLAIRE GLIDING MOTION ===", 0.3, 0.9, 1.0, 1.0)
     imgui.text("Status: " .. tostring(motion.status))
-    imgui.text(string.format("Distance to Leon: %.2f m | Speed: %.1f m/s (Actual: %.1f m/s)",
+    imgui.text(string.format("Distance to Leon: %.2f m | Speed: %.1f m/s (Live: %.1f m/s)",
         motion.dist_to_leon, motion.current_speed, motion.verified_velocity))
 
     imgui.text(string.format("Claire Pos: (%.2f, %.2f, %.2f)", motion.comp_pos.x, motion.comp_pos.y, motion.comp_pos.z))
@@ -498,9 +536,9 @@ local function draw_motion_ui(suffix)
     if imgui.button("Force Reveal Visuals##rev_all" .. suffix) then
         local body_go = _G.DuoMode and _G.DuoMode.get_companion_body and _G.DuoMode.get_companion_body()
         if body_go then
-            force_reveal_hierarchy(body_go)
+            force_reveal_all(body_go)
             local parts = _G.DuoMode and _G.DuoMode.get_companion_parts and _G.DuoMode.get_companion_parts() or {}
-            for _, p in ipairs(parts) do force_reveal_hierarchy(p) end
+            for _, p in ipairs(parts) do force_reveal_all(p) end
             log_debug("Force reveal visuals manually clicked.")
         end
     end
@@ -522,7 +560,7 @@ re.on_frame(function()
     end)
 end)
 
--- REFramework Menu entry
+-- Embedded in REFramework Main Menu
 re.on_draw_ui(function()
     draw_motion_ui("##menu")
 end)

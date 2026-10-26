@@ -1,7 +1,7 @@
 --[[
     Resident Evil 2: Duo Mode — Claire Redfield Spawner
     Script: character_renderer.lua
-    Purpose: Dedicated harness to spawn Claire Redfield (Body, Face, Hair) into the 3D viewport.
+    Purpose: Dedicated harness to spawn Claire Redfield (Classic Red Jacket) into the 3D viewport.
     Author: AryanTechie-007
 ]]
 
@@ -10,42 +10,10 @@ spawner.spawned_entities = {}
 spawner.last_status = "Ready - Standing by (Click button to spawn)"
 spawner.click_count = 0
 
--- =========================================================================
--- 1. Costume Presets
--- =========================================================================
-spawner.costumes = {
-    {
-        id = "noir",
-        name = "Noir Outfit (Costume A - Verified Mesh)",
-        body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_a.pfb",
-        head = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb",
-        hair = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb",
-        body_exists = true,
-        head_exists = true,
-        hair_exists = true,
-    },
-    {
-        id = "classic",
-        name = "Classic Jacket (Costume 1)",
-        body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_1.pfb",
-        head = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_1.pfb",
-        hair = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_1.pfb",
-        body_exists = true,
-        head_exists = true,
-        hair_exists = true,
-    },
-    {
-        id = "alternate",
-        name = "Alternate (Costume 2)",
-        body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_2.pfb",
-        head = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_1.pfb",
-        hair = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_1.pfb",
-        body_exists = true,
-        head_exists = true,
-        hair_exists = true,
-    }
-}
-spawner.selected_costume_idx = 1 -- Default: Noir Outfit (100% verified visible 3D mesh)
+-- Locked Exclusively to Classic Red Jacket Version
+spawner.CLAIRE_BODY = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_1.pfb"
+spawner.CLAIRE_FACE = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_1.pfb"
+spawner.CLAIRE_HAIR = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_1.pfb"
 
 -- Streaming State
 spawner.body_pfb = nil
@@ -76,7 +44,7 @@ local function log_debug(msg)
 end
 
 -- =========================================================================
--- 2. Transform Math & Safe Position Setters
+-- 1. Transform Math & Safe Position Setters
 -- =========================================================================
 local function set_transform_position(tf, x, y, z)
     if not tf then return false end
@@ -84,11 +52,11 @@ local function set_transform_position(tf, x, y, z)
     local v3 = Vector3f and Vector3f.new and Vector3f.new(x, y, z)
 
     if v4 and tf.set_position then
-        local ok1 = pcall(function() tf:set_position(v4, false) end)
+        local ok1 = pcall(function() tf:set_position(v4) end)
         if ok1 then return true end
     end
     if v3 and tf.set_position then
-        local ok2 = pcall(function() tf:set_position(v3, false) end)
+        local ok2 = pcall(function() tf:set_position(v3) end)
         if ok2 then return true end
     end
     if tf.call then
@@ -163,9 +131,9 @@ local function get_front_spawn_position(player_tf, dist)
 end
 
 -- =========================================================================
--- 3. Force Enable All Meshes, Materials, and Parts
+-- 2. Force Enable All Meshes, Materials, Submeshes, and Parts Controller
 -- =========================================================================
-local function force_reveal_hierarchy(root_go)
+function spawner.force_reveal_hierarchy(root_go)
     if not root_go then return end
 
     local function process_go(go)
@@ -183,18 +151,13 @@ local function force_reveal_hierarchy(root_go)
 
                 pcall(function() c:call("set_Enabled", true) end)
 
-                -- Mesh component: force all draw flags & materials on
+                -- 1. Mesh Component: Enable draw and ALL submeshes and materials
                 if tname:find("via.render.Mesh") then
                     pcall(function() c:call("set_Draw", true) end)
                     pcall(function() c:call("set_Enabled", true) end)
                     pcall(function() c:call("set_DrawMesh", true) end)
-                    pcall(function()
-                        local mat_count = c:call("get_MaterialNum") or 0
-                        for i = 0, mat_count - 1 do
-                            pcall(function() c:call("setMaterialsEnable(System.Int32, System.Boolean)", i, true) end)
-                            pcall(function() c:call("setMaterialsEnable", i, true) end)
-                        end
-                    end)
+
+                    -- Enable all submeshes
                     pcall(function()
                         local mesh_count = c:call("get_MeshNum") or 0
                         for i = 0, mesh_count - 1 do
@@ -202,21 +165,48 @@ local function force_reveal_hierarchy(root_go)
                             pcall(function() c:call("setMeshEnable", i, true) end)
                         end
                     end)
+
+                    -- Enable all materials
+                    pcall(function()
+                        local mat_count = c:call("get_MaterialNum") or 0
+                        for j = 0, mat_count - 1 do
+                            pcall(function() c:call("setMaterialsEnable(System.Int32, System.Boolean)", j, true) end)
+                            pcall(function() c:call("setMaterialsEnable", j, true) end)
+                        end
+                    end)
                 end
 
-                -- ComputeSkinning
+                -- 2. ComputeSkinning: Enable GPU skinning
                 if tname:find("ComputeSkinning") then
                     pcall(function() c:call("set_Enabled", true) end)
                 end
 
-                -- SurvivorMeshPartsController: force parts on
+                -- 3. SurvivorMeshPartsController: Force parts on & update
                 if tname:find("SurvivorMeshPartsController") then
                     pcall(function() c:call("set_Enabled", true) end)
-                    pcall(function() c:call("setAllPartsEnable", true) end)
-                    pcall(function() c:call("setPartsEnable", true) end)
-                    pcall(function() c:call("showAll") end)
-                    pcall(function() c:call("apply") end)
-                    pcall(function() c:call("update") end)
+                    pcall(function() c:call("set_PartsForm", 0) end)
+                    pcall(function() c:call("set_PartsForm", 1) end)
+                    pcall(function() c:call("updateMeshPartsSettings") end)
+                    pcall(function() c:call("updateScenarioSettings") end)
+                    pcall(function() c:call("updateVariableSettings") end)
+
+                    -- Enable all individual part elements
+                    pcall(function()
+                        local parts_arr = c:call("get_Parts")
+                        if parts_arr and parts_arr.get_elements then
+                            for _, p in ipairs(parts_arr:get_elements()) do
+                                if p and p.call then
+                                    pcall(function() p:call("set_Enable", true) end)
+                                    pcall(function() p:call("set_IsEnable", true) end)
+                                end
+                            end
+                        end
+                    end)
+                end
+
+                -- 4. ParentMotionSynchronizer: Enable on Face
+                if tname:find("ParentMotionSynchronizer") then
+                    pcall(function() c:call("set_Enabled", true) end)
                 end
             end
         end
@@ -241,33 +231,7 @@ local function force_reveal_hierarchy(root_go)
 end
 
 -- =========================================================================
--- 4. Scan and Resolve Valid Costume Files
--- =========================================================================
-local function check_file_exist(path)
-    if not path then return false end
-    local exists = false
-    pcall(function()
-        local pfb = sdk.create_instance("via.Prefab"):add_ref()
-        pfb:call("set_Path", path)
-        exists = pfb:call("get_Exist")
-    end)
-    return exists
-end
-
-function spawner.scan_all_candidates()
-    log_debug("=== Scanning RE2 Pak Archives for Claire Costumes ===")
-    for _, c in ipairs(spawner.costumes) do
-        c.body_exists = check_file_exist(c.body)
-        c.head_exists = check_file_exist(c.head)
-        c.hair_exists = check_file_exist(c.hair)
-        log_debug(string.format("  [%s] Body: %s | Head: %s | Hair: %s",
-            c.name, tostring(c.body_exists), tostring(c.head_exists), tostring(c.hair_exists)))
-    end
-    log_debug("Default selected costume: " .. spawner.costumes[spawner.selected_costume_idx].name)
-end
-
--- =========================================================================
--- 5. Player Resolution
+-- 3. Player Resolution
 -- =========================================================================
 function spawner.get_master_player()
     local player_man = nil
@@ -295,7 +259,7 @@ function spawner.get_player_game_object(player)
 end
 
 -- =========================================================================
--- 6. Despawn Logic
+-- 4. Despawn Logic
 -- =========================================================================
 function spawner.execute_despawn()
     pcall(function()
@@ -328,57 +292,48 @@ function spawner.execute_despawn()
 end
 
 -- =========================================================================
--- 7. Initiate Spawner Pipeline
+-- 5. Initiate Spawner Pipeline (Classic Red Jacket Exclusively)
 -- =========================================================================
-function spawner.start_spawn(mode)
+function spawner.start_spawn()
     spawner.execute_despawn()
-    spawner.mode = mode or "full"
+    spawner.mode = "full"
 
-    local costume = spawner.costumes[spawner.selected_costume_idx] or spawner.costumes[1]
-    local body_path = costume.body
-    local head_path = costume.head_exists and costume.head or spawner.costumes[1].head
-    local hair_path = costume.hair_exists and costume.hair or spawner.costumes[1].hair
-
-    log_debug(string.format("Starting Claire Spawn Pipeline [%s] (Mode: %s):", costume.name, spawner.mode))
-    log_debug("  Body: " .. tostring(body_path))
-    if spawner.mode == "full" then
-        log_debug("  Head: " .. tostring(head_path))
-        log_debug("  Hair: " .. tostring(hair_path))
-    end
+    log_debug("Starting Claire Spawn Pipeline [Classic Red Jacket]:")
+    log_debug("  Body: " .. tostring(spawner.CLAIRE_BODY))
+    log_debug("  Face: " .. tostring(spawner.CLAIRE_FACE))
+    log_debug("  Hair: " .. tostring(spawner.CLAIRE_HAIR))
 
     -- Create Body Prefab
     pcall(function()
         local b = sdk.create_instance("via.Prefab"):add_ref()
-        b:call("set_Path", body_path)
+        b:call("set_Path", spawner.CLAIRE_BODY)
         b:call("set_Standby", true)
         spawner.body_pfb = b
     end)
 
-    -- Create Head and Hair Prefabs if full mode
-    if spawner.mode == "full" and head_path then
-        pcall(function()
-            local h = sdk.create_instance("via.Prefab"):add_ref()
-            h:call("set_Path", head_path)
-            h:call("set_Standby", true)
-            spawner.head_pfb = h
-        end)
-    end
-    if spawner.mode == "full" and hair_path then
-        pcall(function()
-            local hr = sdk.create_instance("via.Prefab"):add_ref()
-            hr:call("set_Path", hair_path)
-            hr:call("set_Standby", true)
-            spawner.hair_pfb = hr
-        end)
-    end
+    -- Create Head Prefab
+    pcall(function()
+        local h = sdk.create_instance("via.Prefab"):add_ref()
+        h:call("set_Path", spawner.CLAIRE_FACE)
+        h:call("set_Standby", true)
+        spawner.head_pfb = h
+    end)
+
+    -- Create Hair Prefab
+    pcall(function()
+        local hr = sdk.create_instance("via.Prefab"):add_ref()
+        hr:call("set_Path", spawner.CLAIRE_HAIR)
+        hr:call("set_Standby", true)
+        spawner.hair_pfb = hr
+    end)
 
     spawner.streaming = true
     spawner.stream_frames = 0
-    spawner.last_status = "Streaming " .. costume.name .. " assets... (Frame 0)"
+    spawner.last_status = "Streaming Claire Red Jacket assets... (Frame 0)"
 end
 
 -- =========================================================================
--- 8. Master Frame Loop (re.on_frame)
+-- 6. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
     if spawner.streaming and spawner.body_pfb then
@@ -406,50 +361,48 @@ re.on_frame(function()
                 set_transform_position(b_tf, front_pos.x, front_pos.y, front_pos.z)
             end
 
-            force_reveal_hierarchy(body_obj)
+            spawner.force_reveal_hierarchy(body_obj)
             table.insert(spawner.spawned_entities, body_obj)
             log_debug(string.format("Body instantiated at frame %d at (%.2f, %.2f, %.2f)", spawner.stream_frames, front_pos.x, front_pos.y, front_pos.z))
 
-            -- Head & Hair
-            if spawner.mode == "full" then
-                if spawner.head_pfb then
-                    local head_obj = nil
-                    pcall(function() head_obj = spawner.head_pfb:call("instantiate(via.vec3)", vpos) end)
-                    if head_obj then
-                        pcall(function() head_obj:add_ref() end)
-                        pcall(function()
-                            local h_tf = head_obj:call("get_Transform")
-                            if h_tf and b_tf then
-                                h_tf:call("set_Parent", b_tf)
-                            end
-                        end)
-                        force_reveal_hierarchy(head_obj)
-                        table.insert(spawner.spawned_entities, head_obj)
-                        log_debug("Head instantiated, parented, and force-revealed.")
-                    end
-                end
-
-                if spawner.hair_pfb then
-                    local hair_obj = nil
-                    pcall(function() hair_obj = spawner.hair_pfb:call("instantiate(via.vec3)", vpos) end)
-                    if hair_obj then
-                        pcall(function() hair_obj:add_ref() end)
-                        pcall(function()
-                            local hr_tf = hair_obj:call("get_Transform")
-                            if hr_tf and b_tf then
-                                hr_tf:call("set_Parent", b_tf)
-                            end
-                        end)
-                        force_reveal_hierarchy(hair_obj)
-                        table.insert(spawner.spawned_entities, hair_obj)
-                        log_debug("Hair instantiated, parented, and force-revealed.")
-                    end
+            -- Head
+            if spawner.head_pfb then
+                local head_obj = nil
+                pcall(function() head_obj = spawner.head_pfb:call("instantiate(via.vec3)", vpos) end)
+                if head_obj then
+                    pcall(function() head_obj:add_ref() end)
+                    pcall(function()
+                        local h_tf = head_obj:call("get_Transform")
+                        if h_tf and b_tf then
+                            h_tf:call("set_Parent", b_tf)
+                        end
+                    end)
+                    spawner.force_reveal_hierarchy(head_obj)
+                    table.insert(spawner.spawned_entities, head_obj)
+                    log_debug("Head instantiated and attached to Body.")
                 end
             end
 
-            local c_name = spawner.costumes[spawner.selected_costume_idx].name
+            -- Hair
+            if spawner.hair_pfb then
+                local hair_obj = nil
+                pcall(function() hair_obj = spawner.hair_pfb:call("instantiate(via.vec3)", vpos) end)
+                if hair_obj then
+                    pcall(function() hair_obj:add_ref() end)
+                    pcall(function()
+                        local hr_tf = hair_obj:call("get_Transform")
+                        if hr_tf and b_tf then
+                            hr_tf:call("set_Parent", b_tf)
+                        end
+                    end)
+                    spawner.force_reveal_hierarchy(hair_obj)
+                    table.insert(spawner.spawned_entities, hair_obj)
+                    log_debug("Hair instantiated and attached to Body.")
+                end
+            end
+
             local total_parts = #spawner.spawned_entities
-            spawner.last_status = string.format("SUCCESS: CLAIRE (%s) FULLY RENDERED (Parts: %d)!", c_name, total_parts)
+            spawner.last_status = string.format("SUCCESS: CLAIRE (Red Jacket) FULLY RENDERED (Parts: %d)!", total_parts)
             log_debug(string.format("Spawn completed! Total parts active: %d", total_parts))
 
             spawner.streaming = false
@@ -470,41 +423,14 @@ re.on_frame(function()
     end
 end)
 
--- Initial scan on script load
-pcall(spawner.scan_all_candidates)
-
 -- =========================================================================
--- 9. ImGui Spawner UI with Direct Outfit Selection
+-- 7. ImGui Spawner UI (Clean, Single Focus: Red Jacket)
 -- =========================================================================
 local function draw_spawner_ui(suffix)
     suffix = suffix or ""
-    imgui.text_colored("=== RE2 DUO MODE: CLAIRE REDFIELD SPAWNER ===", 0.3, 0.9, 1.0, 1.0)
+    imgui.text_colored("=== RE2 DUO MODE: CLAIRE REDFIELD (RED JACKET) ===", 0.3, 0.9, 1.0, 1.0)
     imgui.text("Status: " .. tostring(spawner.last_status))
-    imgui.separator()
-
-    imgui.text("Choose Claire's Outfit:")
-    for idx, c in ipairs(spawner.costumes) do
-        local is_selected = (spawner.selected_costume_idx == idx)
-        local btn_label = (is_selected and "[*] " or "[ ] ") .. c.name .. "##cst_" .. tostring(idx) .. suffix
-        if is_selected then
-            imgui.push_style_color(21, 0.2, 0.6, 0.9, 1.0)
-        end
-        if imgui.button(btn_label) then
-            spawner.selected_costume_idx = idx
-            log_debug("Costume selected: " .. c.name)
-            if #spawner.spawned_entities > 0 then
-                spawner.start_spawn("full")
-            end
-        end
-        if is_selected then
-            imgui.pop_style_color(1)
-        end
-        imgui.same_line()
-    end
-    imgui.new_line()
-
-    local cur_c = spawner.costumes[spawner.selected_costume_idx]
-    imgui.text_colored("Active Outfit: " .. cur_c.name, 1.0, 0.85, 0.2, 1.0)
+    imgui.text_colored("Outfit: Classic Red Leather Jacket (pl1000_body_costume_1)", 1.0, 0.85, 0.2, 1.0)
     imgui.separator()
 
     local player = spawner.get_master_player()
@@ -512,18 +438,18 @@ local function draw_spawner_ui(suffix)
         imgui.text_colored("Player (Leon): ACTIVE IN SCENE", 0.2, 1.0, 0.4, 1.0)
         imgui.spacing()
 
-        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Full Character) <<<##btn_full" .. suffix) then
+        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Red Jacket) <<<##btn_full" .. suffix) then
             spawner.click_count = spawner.click_count + 1
-            log_debug("UI BUTTON CLICKED: Full Character Spawn (" .. cur_c.name .. ")")
-            spawner.start_spawn("full")
+            log_debug("UI BUTTON CLICKED: Red Jacket Spawn")
+            spawner.start_spawn()
         end
 
         imgui.spacing()
-        if imgui.button("Force Refresh / Reveal All Visuals##btn_reveal" .. suffix) then
+        if imgui.button("Force Reveal Visuals (All Parts)##btn_reveal" .. suffix) then
             for _, ent in ipairs(spawner.spawned_entities) do
-                force_reveal_hierarchy(ent)
+                spawner.force_reveal_hierarchy(ent)
             end
-            log_debug("Manual Force Refresh / Reveal executed across all parts.")
+            log_debug("Manual Force Reveal Visuals clicked.")
         end
 
         imgui.same_line()
@@ -553,7 +479,7 @@ re.on_draw_ui(function()
 end)
 
 -- =========================================================================
--- 10. Global Interface
+-- 8. Global Interface
 -- =========================================================================
 _G.DuoMode = _G.DuoMode or {}
 _G.DuoMode.spawner = spawner
