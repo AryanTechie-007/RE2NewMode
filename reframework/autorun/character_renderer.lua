@@ -1,13 +1,28 @@
 --[[
     Resident Evil 2: Duo Mode — Claire Redfield Spawner
     Script: character_renderer.lua
-    Purpose: Dedicated harness to spawn Claire Redfield (PL1000) into the 3D viewport and inspect survivor anatomy.
+    Purpose: Dedicated harness to spawn Claire Redfield (PL1000) into the 3D viewport.
     Author: AryanTechie-007
 ]]
 
+local spawner = {}
+spawner.spawned_entities = {}
+spawner.last_status = "Ready - Standing by (Click button to spawn)"
+spawner.click_count = 0
+
+-- Streaming State
+spawner.loading_prefab = nil
+spawner.loading_path = ""
+spawner.loading_frames = 0
+spawner.load_mode = "body_only"
+
+-- Secondary Prefabs for Modular Mode
+spawner.loading_head_prefab = nil
+spawner.loading_hair_prefab = nil
+
 local function log_debug(msg)
     pcall(function()
-        local f = io.open("reframework/data/spawner_debug.txt", "a")
+        local f = io.open("spawner_debug.txt", "a")
         if f then
             f:write(os.date("[%H:%M:%S] ") .. tostring(msg) .. "\n")
             f:close()
@@ -18,25 +33,7 @@ local function log_debug(msg)
     end
 end
 
-log_debug("=== Claire Redfield Spawner Loading ===")
-
-local spawner = {}
-spawner.spawned_entities = {}
-spawner.last_status = "Ready - Standing by"
-spawner.pending_action = nil
-
--- Streaming State
-spawner.loading_prefab = nil
-spawner.loading_path = ""
-spawner.loading_frames = 0
-spawner.load_mode = "body_only" -- "body_only" or "modular"
-
--- Secondary Prefabs for Modular Mode
-spawner.loading_head_prefab = nil
-spawner.loading_hair_prefab = nil
-
--- Inspection state
-spawner.leon_inspected = false
+log_debug("=== Claire Redfield Spawner Initialized ===")
 
 -- =========================================================================
 -- 1. Helper: Safe Yaw and Forward Vector Extraction
@@ -98,78 +95,7 @@ function spawner.get_player_game_object(player)
 end
 
 -- =========================================================================
--- 3. Scene Inspector: Analyze Active Player Anatomy
--- =========================================================================
-function spawner.inspect_active_player()
-    if spawner.leon_inspected then return end
-    local player = spawner.get_master_player()
-    if not player then return end
-    local pgo = spawner.get_player_game_object(player)
-    if not pgo then return end
-
-    spawner.leon_inspected = true
-    pcall(function()
-        local f = io.open("reframework/data/leon_inspection.txt", "w")
-        if not f then return end
-
-        f:write("=======================================================\n")
-        f:write("RE2 DUO MODE: ACTIVE SCENE PLAYER INSPECTION\n")
-        f:write("Time: " .. os.date() .. "\n")
-        f:write("=======================================================\n\n")
-        f:write("Player GameObject Name: " .. tostring(pgo:call("get_Name")) .. "\n")
-
-        -- Components on player
-        local comp_count = 0
-        pcall(function() comp_count = pgo:call("get_ComponentCount") or 0 end)
-        f:write("Total Components: " .. tostring(comp_count) .. "\n")
-        for i = 0, comp_count - 1 do
-            pcall(function()
-                local comp = pgo:call("getComponent(System.Int32)", i)
-                local td = comp and comp:get_type_definition()
-                local cname = td and td:get_full_name() or "unknown"
-                f:write(string.format("  [Comp %d] %s\n", i, cname))
-            end)
-        end
-
-        -- Transform Children
-        local tf = nil
-        pcall(function() tf = pgo:call("get_Transform") end)
-        if tf then
-            local child_count = 0
-            pcall(function() child_count = tf:call("get_ChildCount") or 0 end)
-            f:write("\nTransform Children Count: " .. tostring(child_count) .. "\n")
-            for i = 0, child_count - 1 do
-                pcall(function()
-                    local ch_tf = tf:call("get_Child(System.Int32)", i) or tf:call("get_Child", i)
-                    if ch_tf then
-                        local ch_go = ch_tf:call("get_GameObject")
-                        local ch_name = ch_go and ch_go:call("get_Name") or "unnamed"
-                        local pjoint = nil
-                        pcall(function() pjoint = ch_tf:call("get_ParentJoint") end)
-                        local pj_name = pjoint and pjoint.call and pjoint:call("get_Name") or "none"
-                        f:write(string.format("  [Child %d] name='%s', parent_joint='%s'\n", i, tostring(ch_name), tostring(pj_name)))
-
-                        if ch_go then
-                            local ch_comp_count = ch_go:call("get_ComponentCount") or 0
-                            for j = 0, ch_comp_count - 1 do
-                                local ch_comp = ch_go:call("getComponent(System.Int32)", j)
-                                local ch_td = ch_comp and ch_comp:get_type_definition()
-                                f:write(string.format("     -> Comp: %s\n", ch_td and ch_td:get_full_name() or "unknown"))
-                            end
-                        end
-                    end
-                end)
-            end
-        end
-
-        f:write("\n=======================================================\n")
-        f:close()
-        log_debug("Active player hierarchy inspection written to reframework/data/leon_inspection.txt")
-    end)
-end
-
--- =========================================================================
--- 4. Despawn Logic
+-- 3. Despawn Logic
 -- =========================================================================
 function spawner.execute_despawn()
     local scene_man = sdk.get_native_singleton("via.SceneManager")
@@ -191,12 +117,12 @@ function spawner.execute_despawn()
     spawner.loading_prefab = nil
     spawner.loading_head_prefab = nil
     spawner.loading_hair_prefab = nil
-    spawner.last_status = "Despawned"
+    spawner.last_status = "Despawned - Standing by"
     log_debug("Despawn executed.")
 end
 
 -- =========================================================================
--- 5. Primary Spawner: Guaranteed Body Instantiation (Verified Working)
+-- 4. Primary Spawner: Guaranteed Body Instantiation (Verified Working)
 -- =========================================================================
 function spawner.spawn_claire_body(costume_index)
     spawner.execute_despawn()
@@ -206,15 +132,15 @@ function spawner.spawn_claire_body(costume_index)
     log_debug("Starting Claire Body Stream: " .. body_path)
 
     local pfb = nil
-    pcall(function()
+    local ok_pfb, err_pfb = pcall(function()
         pfb = sdk.create_instance("via.Prefab"):add_ref()
         pfb:call("set_Path", body_path)
         pfb:call("set_Standby", true)
     end)
 
-    if not pfb then
-        spawner.last_status = "Failed: Could not create via.Prefab"
-        log_debug("Failed to create via.Prefab instance.")
+    if not ok_pfb or not pfb then
+        spawner.last_status = "Error creating via.Prefab: " .. tostring(err_pfb)
+        log_debug("Failed to create via.Prefab: " .. tostring(err_pfb))
         return
     end
 
@@ -222,11 +148,12 @@ function spawner.spawn_claire_body(costume_index)
     spawner.loading_path = body_path
     spawner.loading_frames = 0
     spawner.load_mode = "body_only"
-    spawner.last_status = "Streaming Claire body from archives..."
+    spawner.last_status = "Streaming Claire body from archives... (Frame 0)"
+    log_debug("via.Prefab configured and standby requested.")
 end
 
 -- =========================================================================
--- 6. Experimental Modular Spawner: Body + Head + Hair
+-- 5. Experimental Modular Spawner: Body + Head + Hair
 -- =========================================================================
 function spawner.spawn_claire_modular(costume_index)
     spawner.execute_despawn()
@@ -263,24 +190,21 @@ function spawner.spawn_claire_modular(costume_index)
     spawner.loading_hair_prefab = hr_pfb
     spawner.loading_frames = 0
     spawner.load_mode = "modular"
-    spawner.last_status = "Streaming Body + Head + Hair..."
+    spawner.last_status = "Streaming Body + Head + Hair... (Frame 0)"
 end
 
 -- =========================================================================
--- 7. Master Frame Loop (re.on_frame)
+-- 6. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
-    -- Auto-inspect player once loaded
-    if not spawner.leon_inspected then
-        pcall(spawner.inspect_active_player)
-    end
-
     -- Asynchronous Streaming Tick
     if spawner.loading_prefab then
         spawner.loading_frames = spawner.loading_frames + 1
         local pfb = spawner.loading_prefab
         local is_ready = false
         pcall(function() is_ready = pfb:call("get_Ready") end)
+
+        spawner.last_status = string.format("Streaming from archives... (Frame %d | Ready: %s)", spawner.loading_frames, tostring(is_ready))
 
         if is_ready then
             local player = spawner.get_master_player()
@@ -306,7 +230,7 @@ re.on_frame(function()
                     body_go:call("set_UpdateSelf", true)
                 end)
                 table.insert(spawner.spawned_entities, body_go)
-                log_debug("Body successfully instantiated in viewport.")
+                log_debug(string.format("Body instantiated at frame %d at (%.2f, %.2f, %.2f)", spawner.loading_frames, front_pos.x, front_pos.y, front_pos.z))
 
                 -- 2. If modular mode, attach head and hair
                 if spawner.load_mode == "modular" then
@@ -330,7 +254,7 @@ re.on_frame(function()
                                     head_go:call("set_UpdateSelf", true)
                                 end)
                                 table.insert(spawner.spawned_entities, head_go)
-                                log_debug("Head successfully instantiated and attached.")
+                                log_debug("Head instantiated and attached.")
                             end
                         end
                     end
@@ -355,7 +279,7 @@ re.on_frame(function()
                                     hair_go:call("set_UpdateSelf", true)
                                 end)
                                 table.insert(spawner.spawned_entities, hair_go)
-                                log_debug("Hair successfully instantiated and attached.")
+                                log_debug("Hair instantiated and attached.")
                             end
                         end
                     end
@@ -365,48 +289,35 @@ re.on_frame(function()
                 if total_parts >= 3 then
                     spawner.last_status = "SUCCESS: CLAIRE FULLY RENDERED (Body + Head + Hair)!"
                 else
-                    spawner.last_status = "CLAIRE RENDERED IN VIEWPORT!"
+                    spawner.last_status = "SUCCESS: CLAIRE RENDERED IN VIEWPORT!"
                 end
                 log_debug("Spawn completed. Total parts in scene: " .. tostring(total_parts))
             else
-                spawner.last_status = "Instantiation failed"
+                spawner.last_status = "Instantiation failed: " .. tostring(err)
                 log_debug("Body instantiate failed: " .. tostring(err))
             end
 
             spawner.loading_prefab = nil
             spawner.loading_head_prefab = nil
             spawner.loading_hair_prefab = nil
-        elseif spawner.loading_frames > 180 then
-            spawner.last_status = "Streaming timed out"
-            log_debug("Streaming timed out at frame 180.")
+        elseif spawner.loading_frames > 240 then
+            spawner.last_status = "Streaming timed out at frame 240"
+            log_debug("Streaming timed out at frame 240.")
             spawner.loading_prefab = nil
             spawner.loading_head_prefab = nil
             spawner.loading_hair_prefab = nil
         end
     end
-
-    -- Process pending action
-    if spawner.pending_action == "spawn_body" then
-        spawner.pending_action = nil
-        pcall(function() spawner.spawn_claire_body(0) end)
-    elseif spawner.pending_action == "spawn_modular" then
-        spawner.pending_action = nil
-        pcall(function() spawner.spawn_claire_modular(0) end)
-    elseif spawner.pending_action == "spawn_tank" then
-        spawner.pending_action = nil
-        pcall(function() spawner.spawn_claire_body(1) end)
-    elseif spawner.pending_action == "despawn" then
-        spawner.pending_action = nil
-        pcall(spawner.execute_despawn)
-    end
 end)
 
 -- =========================================================================
--- 8. Clean, Minimalist ImGui Spawner UI
+-- 7. Clean, Minimalist ImGui Spawner UI (Instant Action Handlers)
 -- =========================================================================
-local function draw_spawner_ui()
+local function draw_spawner_ui(suffix)
+    suffix = suffix or ""
     imgui.text_colored("=== RE2 DUO MODE: CLAIRE REDFIELD SPAWNER ===", 0.3, 0.9, 1.0, 1.0)
     imgui.text("Status: " .. tostring(spawner.last_status))
+    imgui.text("Spawn Clicks Registered: " .. tostring(spawner.click_count))
     imgui.separator()
 
     local player = spawner.get_master_player()
@@ -414,23 +325,30 @@ local function draw_spawner_ui()
         imgui.text_colored("Player (Leon): ACTIVE IN SCENE", 0.2, 1.0, 0.4, 1.0)
         imgui.spacing()
 
-        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Instant Spawn) <<<") then
-            spawner.pending_action = "spawn_body"
+        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Instant Spawn) <<<##btn_inst" .. suffix) then
+            spawner.click_count = spawner.click_count + 1
+            log_debug("UI BUTTON CLICKED: Instant Spawn")
+            spawner.spawn_claire_body(0)
         end
 
         imgui.spacing()
-        if imgui.button("Spawn Claire + Head/Hair (Modular Test)") then
-            spawner.pending_action = "spawn_modular"
+        if imgui.button("Spawn Claire + Head/Hair (Modular Test)##btn_mod" .. suffix) then
+            spawner.click_count = spawner.click_count + 1
+            log_debug("UI BUTTON CLICKED: Modular Spawn")
+            spawner.spawn_claire_modular(0)
         end
 
         imgui.same_line()
-        if imgui.button("Spawn Claire (Tank Top)") then
-            spawner.pending_action = "spawn_tank"
+        if imgui.button("Spawn Claire (Tank Top)##btn_tank" .. suffix) then
+            spawner.click_count = spawner.click_count + 1
+            log_debug("UI BUTTON CLICKED: Tank Top Spawn")
+            spawner.spawn_claire_body(1)
         end
 
         imgui.spacing()
-        if imgui.button("Despawn Claire") then
-            spawner.pending_action = "despawn"
+        if imgui.button("Despawn Claire##btn_desp" .. suffix) then
+            log_debug("UI BUTTON CLICKED: Despawn")
+            spawner.execute_despawn()
         end
     else
         imgui.text_colored("Waiting for game scene / Leon to load...", 1.0, 0.8, 0.2, 1.0)
@@ -438,16 +356,16 @@ local function draw_spawner_ui()
     end
 end
 
--- Embedded in REFramework Main Menu
+-- Embedded in REFramework Main Menu (with ##menu suffix)
 re.on_draw_ui(function()
-    draw_spawner_ui()
+    draw_spawner_ui("##menu")
 end)
 
--- Dedicated Standalone Floating Window
+-- Dedicated Standalone Floating Window (with ##win suffix)
 re.on_frame(function()
     pcall(function()
         if imgui.begin_window("Claire Redfield Spawner (Duo Mode)", true, 0) then
-            draw_spawner_ui()
+            draw_spawner_ui("##win")
             imgui.end_window()
         end
     end)
