@@ -47,7 +47,7 @@ function command_wheel.draw()
         end
 
         imgui.separator()
-        imgui.text_colored("Hold Middle Mouse / RB to keep open", 0.6, 0.6, 0.6, 1.0)
+        imgui.text_colored("Hold [T] (Keyboard) or [RB] (Gamepad) to keep open", 0.6, 0.6, 0.6, 1.0)
         imgui.end_window()
     end
 end

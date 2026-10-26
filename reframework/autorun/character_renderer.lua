@@ -68,6 +68,14 @@ spawner.elevator_transform = nil
 spawner.cutscene_active = false
 spawner.portal_teleports_count = 0
 
+-- Day 4: Companion Command FSM & Tactical Radial Wheel
+spawner.fsm_state = "FOLLOW" -- "FOLLOW", "WAIT", "COVER"
+spawner.command_wheel_open = false
+spawner.command_wheel_key = 0x54 -- 'T' Key (0x54) - Rebound from Middle Mouse to prevent camera reset conflict!
+spawner.key_names = { "T (Tactical / Orders)", "G (Guard)", "Q (Quick Command)", "Caps Lock", "Mouse 4 (Thumb)", "Mouse 5 (Thumb)" }
+spawner.key_codes = { 0x54, 0x47, 0x51, 0x14, 0x05, 0x06 }
+spawner.selected_key_idx = 1
+
 -- Follow Tuning Parameters
 local STOP_DIST     = 0.35 -- Arrival tolerance at target waypoint
 local WALK_SPEED    = 2.2  -- Walking gliding speed (m/s)
@@ -570,6 +578,14 @@ function spawner.execute_despawn()
     spawner.dist_to_leon = 0.0
     spawner.is_on_elevator = false
     spawner.elevator_transform = nil
+    spawner.fsm_state = "FOLLOW"
+    if spawner.command_wheel_open then
+        spawner.command_wheel_open = false
+        pcall(function()
+            local time_man = sdk.get_managed_singleton("app.ropeway.TimeManager")
+            if time_man then time_man:call("setTimeScale", 1.0) end
+        end)
+    end
     spawner.cutscene_active = false
     spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
     spawner.last_status = "Despawned - Standing by"
@@ -679,10 +695,33 @@ local function update_companion_locomotion(delta_time)
     local dist_leon = distance_2d(leon_pos, comp_pos)
     spawner.dist_to_leon = dist_leon
 
+    -- =========================================================================
+    -- Day 4 FSM: HOLD POSITION / WAIT ORDER
+    -- =========================================================================
+    if spawner.fsm_state == "WAIT" then
+        spawner.current_speed = 0.0
+        spawner.loco_status = string.format("Holding Position / Stay Order (%.2fm from Leon)", dist_leon)
+        -- Emergency fallback: if Leon runs over 28m away, snap to prevent falling into unloaded chunks
+        if dist_leon > 28.0 then
+            local fallback_x = leon_pos.x - math.sin(leon_yaw) * 2.0
+            local fallback_z = leon_pos.z - math.cos(leon_yaw) * 2.0
+            move_transform_safely(body_tf, body_obj, fallback_x, leon_pos.y, fallback_z)
+            rotate_transform_safely(body_tf, body_obj, leon_yaw)
+            spawner.loco_status = "Emergency Catch-up from Stay"
+        end
+        return
+    end
+
     -- Compute companion target waypoint:
     -- follow_distance behind Leon, and follow_flank along Leon's side (over-the-shoulder view)
     local follow_dist = spawner.follow_distance or 1.4
     local flank_offset = spawner.follow_flank or -0.7
+
+    -- Day 4 FSM: Tighter tether in COVER state
+    if spawner.fsm_state == "COVER" then
+        follow_dist = 0.95
+        flank_offset = -0.5
+    end
 
     local fwd_x = math.sin(leon_yaw)
     local fwd_z = math.cos(leon_yaw)
@@ -742,8 +781,13 @@ local function update_companion_locomotion(delta_time)
 
     if dist_target < STOP_DIST or dist_leon < 1.0 then
         target_speed = 0.0
-        target_yaw = leon_yaw -- Face forward with Leon when idle
-        spawner.loco_status = string.format("Idle Alongside Leon (%.2fm)", dist_leon)
+        if spawner.fsm_state == "COVER" then
+            target_yaw = leon_yaw + math.pi * 0.7 -- Orient outward to guard rear flank
+            spawner.loco_status = string.format("In Cover / Guarding Flank (%.2fm)", dist_leon)
+        else
+            target_yaw = leon_yaw -- Face forward with Leon when idle
+            spawner.loco_status = string.format("Idle Alongside Leon (%.2fm)", dist_leon)
+        end
     elseif dist_target >= RUN_THRESHOLD then
         target_speed = RUN_SPEED
         target_yaw = math.atan(dx, dz) -- Face gliding direction
@@ -779,6 +823,143 @@ local function update_companion_locomotion(delta_time)
 end
 
 -- =========================================================================
+-- Day 4: Tactical Command Wheel with Bullet-Time Timescale
+-- =========================================================================
+
+local function open_command_wheel()
+    if spawner.command_wheel_open then return end
+    spawner.command_wheel_open = true
+    pcall(function()
+        local time_man = sdk.get_managed_singleton("app.ropeway.TimeManager")
+        if time_man then time_man:call("setTimeScale", 0.4) end
+    end)
+    log_debug("Tactical Command Wheel opened. Timescale set to 0.4x.")
+end
+
+local function close_command_wheel()
+    if not spawner.command_wheel_open then return end
+    spawner.command_wheel_open = false
+    pcall(function()
+        local time_man = sdk.get_managed_singleton("app.ropeway.TimeManager")
+        if time_man then time_man:call("setTimeScale", 1.0) end
+    end)
+    log_debug("Tactical Command Wheel closed. Timescale restored to 1.0x.")
+end
+
+local function update_command_wheel_input()
+    local is_down = false
+    local key = spawner.key_codes[spawner.selected_key_idx] or 0x54
+
+    if reframework and reframework.is_key_down then
+        pcall(function() is_down = reframework.is_key_down(key) end)
+    end
+
+    if is_down and not spawner.command_wheel_open then
+        open_command_wheel()
+    elseif not is_down and spawner.command_wheel_open then
+        close_command_wheel()
+    end
+
+    -- Numeric order hotkeys while wheel is held open
+    if spawner.command_wheel_open and reframework and reframework.is_key_down then
+        pcall(function()
+            -- '1' (0x31) or Numpad 1 (0x61) -> FOLLOW ME
+            if reframework.is_key_down(0x31) or reframework.is_key_down(0x61) then
+                spawner.fsm_state = "FOLLOW"
+                spawner.follow_enabled = true
+                log_debug("Order selected via hotkey [1]: FOLLOW ME")
+            -- '2' (0x32) or Numpad 2 (0x62) -> HOLD POSITION / STAY
+            elseif reframework.is_key_down(0x32) or reframework.is_key_down(0x62) then
+                spawner.fsm_state = "WAIT"
+                log_debug("Order selected via hotkey [2]: HOLD POSITION (STAY)")
+            -- '3' (0x33) or Numpad 3 (0x63) -> TAKE COVER / DEFEND
+            elseif reframework.is_key_down(0x33) or reframework.is_key_down(0x63) then
+                spawner.fsm_state = "COVER"
+                spawner.follow_enabled = true
+                log_debug("Order selected via hotkey [3]: TAKE COVER")
+            end
+        end)
+    end
+end
+
+local function draw_command_wheel()
+    if not spawner.command_wheel_open then return end
+
+    local display_size = (imgui and imgui.get_display_size and imgui.get_display_size()) or (Vector2f and Vector2f.new and Vector2f.new(1920, 1080)) or { x = 1920, y = 1080 }
+    local center = (Vector2f and Vector2f.new and Vector2f.new(display_size.x * 0.5, display_size.y * 0.5)) or { x = display_size.x * 0.5, y = display_size.y * 0.5 }
+
+    pcall(function()
+        if imgui.set_next_window_pos then
+            local pivot = (Vector2f and Vector2f.new and Vector2f.new(0.5, 0.5)) or { x = 0.5, y = 0.5 }
+            imgui.set_next_window_pos(center, 1, pivot)
+        end
+    end)
+    pcall(function()
+        if imgui.set_next_window_size then
+            local wsize = (Vector2f and Vector2f.new and Vector2f.new(380, 270)) or { x = 380, y = 270 }
+            imgui.set_next_window_size(wsize, 1)
+        end
+    end)
+
+    local opened = false
+    pcall(function()
+        opened = imgui.begin_window("Tactical Orders##wheel", true, 1 | 2 | 4 | 32)
+    end)
+
+    if opened then
+        imgui.text_colored("=== TACTICAL COMMAND WHEEL ===", 0.3, 0.9, 1.0, 1.0)
+        imgui.text_colored("Timescale: 0.4x (Bullet-Time Slowdown Active)", 1.0, 0.8, 0.2, 1.0)
+        imgui.separator()
+        imgui.spacing()
+
+        -- Option 1: FOLLOW
+        local is_follow = (spawner.fsm_state == "FOLLOW")
+        if is_follow then
+            imgui.text_colored(">>> [ACTIVE] [1] FOLLOW ME <<<", 0.2, 1.0, 0.4, 1.0)
+        else
+            imgui.text("    [1] FOLLOW ME")
+        end
+        local btn_w = (Vector2f and Vector2f.new and Vector2f.new(340, 32)) or { x = 340, y = 32 }
+        if imgui.button("Select [1]: Follow Me##btn_follow", btn_w) then
+            spawner.fsm_state = "FOLLOW"
+            spawner.follow_enabled = true
+            close_command_wheel()
+        end
+        imgui.spacing()
+
+        -- Option 2: HOLD POSITION (STAY)
+        local is_wait = (spawner.fsm_state == "WAIT")
+        if is_wait then
+            imgui.text_colored(">>> [ACTIVE] [2] HOLD POSITION (STAY) <<<", 1.0, 0.8, 0.2, 1.0)
+        else
+            imgui.text("    [2] HOLD POSITION (STAY)")
+        end
+        if imgui.button("Select [2]: Hold Position##btn_wait", btn_w) then
+            spawner.fsm_state = "WAIT"
+            close_command_wheel()
+        end
+        imgui.spacing()
+
+        -- Option 3: TAKE COVER
+        local is_cover = (spawner.fsm_state == "COVER")
+        if is_cover then
+            imgui.text_colored(">>> [ACTIVE] [3] TAKE COVER / DEFEND <<<", 0.4, 0.8, 1.0, 1.0)
+        else
+            imgui.text("    [3] TAKE COVER / DEFEND")
+        end
+        if imgui.button("Select [3]: Take Cover##btn_cover", btn_w) then
+            spawner.fsm_state = "COVER"
+            spawner.follow_enabled = true
+            close_command_wheel()
+        end
+
+        imgui.separator()
+        imgui.text_colored("Press [1], [2], [3] or click order. Release key to resume.", 0.7, 0.7, 0.7, 1.0)
+        imgui.end_window()
+    end
+end
+
+-- =========================================================================
 -- 8. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
@@ -786,6 +967,9 @@ re.on_frame(function()
     local dt = spawner.last_time and (now - spawner.last_time) or 0.0166
     spawner.last_time = now
     if dt <= 0.0 or dt > 0.1 then dt = 0.0166 end
+
+    -- Day 4: Tactical Command Wheel Input
+    pcall(update_command_wheel_input)
 
     -- A. Asset Streaming Pipeline
     if spawner.streaming and spawner.body_pfb then
@@ -985,6 +1169,50 @@ local function draw_spawner_ui(suffix)
             end
         end
 
+        -- =====================================================================
+        -- Day 4: Companion Tactical Orders (FSM Dashboard)
+        -- =====================================================================
+        imgui.spacing()
+        imgui.separator()
+        imgui.text_colored("--- Day 4: Tactical Orders & FSM Dashboard ---", 1.0, 0.8, 0.2, 1.0)
+
+        -- State display with color coding
+        if spawner.fsm_state == "FOLLOW" then
+            imgui.text_colored("Current Order: [FOLLOW ME] (Standard Flank Tether)", 0.2, 1.0, 0.4, 1.0)
+        elseif spawner.fsm_state == "WAIT" then
+            imgui.text_colored("Current Order: [HOLD POSITION / STAY] (Anchored in place)", 1.0, 0.8, 0.2, 1.0)
+        elseif spawner.fsm_state == "COVER" then
+            imgui.text_colored("Current Order: [TAKE COVER] (Tight 0.95m Tether / Guard Flank)", 0.4, 0.8, 1.0, 1.0)
+        end
+
+        if imgui.button("Order: Follow Me##btn_fsm_follow" .. suffix) then
+            spawner.fsm_state = "FOLLOW"
+            spawner.follow_enabled = true
+            log_debug("FSM State changed to FOLLOW via UI")
+        end
+        imgui.same_line()
+        if imgui.button("Order: Hold Position (Stay)##btn_fsm_wait" .. suffix) then
+            spawner.fsm_state = "WAIT"
+            log_debug("FSM State changed to WAIT via UI")
+        end
+        imgui.same_line()
+        if imgui.button("Order: Take Cover##btn_fsm_cover" .. suffix) then
+            spawner.fsm_state = "COVER"
+            spawner.follow_enabled = true
+            log_debug("FSM State changed to COVER via UI")
+        end
+
+        imgui.spacing()
+        imgui.text("Command Wheel Hotkey (Bullet-Time 0.4x Slowdown):")
+        local changed_k, new_k = imgui.combo("Wheel Hotkey##wheel_key" .. suffix, spawner.selected_key_idx, spawner.key_names)
+        if changed_k then
+            spawner.selected_key_idx = new_k
+            spawner.command_wheel_key = spawner.key_codes[new_k]
+            log_debug(string.format("Command wheel hotkey changed to: %s (0x%X)", spawner.key_names[new_k], spawner.command_wheel_key))
+        end
+        imgui.text_colored("Hold hotkey in gameplay to slow time to 0.4x & issue orders (or press 1/2/3)!", 0.7, 0.7, 0.7, 1.0)
+        imgui.separator()
+
         imgui.spacing()
         imgui.text("Follow Positioning Options:")
         local flanks = { "Left Flank (-0.7m)", "Directly Behind (0.0m)", "Right Flank (+0.7m)" }
@@ -1010,7 +1238,7 @@ local function draw_spawner_ui(suffix)
     end
 end
 
--- Dedicated Standalone Floating Window
+-- Dedicated Standalone Floating Window & Command Wheel Overlay
 re.on_frame(function()
     pcall(function()
         if imgui.begin_window("Claire Redfield Controller (Duo Mode)", true, 0) then
@@ -1018,9 +1246,18 @@ re.on_frame(function()
             imgui.end_window()
         end
     end)
+    pcall(draw_command_wheel)
 end)
 
 -- REFramework Menu entry
 re.on_draw_ui(function()
     draw_spawner_ui("##menu")
+end)
+
+-- Reset hook to ensure normal timescale on script reset
+re.on_script_reset(function()
+    pcall(function()
+        local time_man = sdk.get_managed_singleton("app.ropeway.TimeManager")
+        if time_man then time_man:call("setTimeScale", 1.0) end
+    end)
 end)

@@ -29,9 +29,10 @@ config.licker_detection_radius = 18.0 -- Meters to detect Lickers and clamp spee
 config.licker_max_stick_magnitude = 0.45
 
 -- UI & Controls
-config.command_wheel_key = 0x04       -- Middle Mouse Button (VK_MBUTTON)
+config.command_wheel_key = 0x54       -- 'T' Key (0x54) - Rebound from Middle Mouse to prevent camera reset conflict!
+config.command_wheel_key_alt = 0x47   -- 'G' Key (0x47) - Alternative hotkey option
 config.command_wheel_gamepad_btn = 0x0200 -- RB / R1 button flag
-config.time_scale_slowdown = 0.4      -- Timescale while command wheel is held
+config.time_scale_slowdown = 0.4      -- Timescale while command wheel is held (40% speed)
 
 -- Audio Bridge
 config.audio_enabled = true
