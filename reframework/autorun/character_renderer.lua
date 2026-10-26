@@ -572,6 +572,9 @@ function spawner.execute_despawn()
     spawner.elevator_transform = nil
     spawner.cutscene_active = false
     spawner.layer_logged = false
+    spawner.motion_initialized = false
+    spawner.last_anim_state = nil
+    spawner.anim_tick_count = 0
     spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
     spawner.last_status = "Despawned - Standing by"
     log_debug("Despawn executed cleanly.")
@@ -634,7 +637,9 @@ end
 -- 7. Companion Animation & Locomotion Controllers
 -- =========================================================================
 
-spawner.layer_logged = false
+spawner.motion_initialized = false
+spawner.anim_tick_count = 0
+spawner.last_anim_state = nil
 
 -- Link Player's Survivor Motion Bank & Motion clip to Claire
 local function link_and_play_motion(body_obj)
@@ -647,6 +652,17 @@ local function link_and_play_motion(body_obj)
         local p_motion = player_go:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
         if not c_motion or not p_motion then return end
 
+        -- 1. Disable unconfigured MotionFsm2 so it does not freeze via.motion.Motion
+        pcall(function()
+            local mfsm = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2"))
+            if mfsm then
+                pcall(function() mfsm:set_field("Enabled", false) end)
+                pcall(function() mfsm:call("set_Enabled", false) end)
+                log_debug("Disabled unconfigured MotionFsm2 on Claire to allow Motion evaluation.")
+            end
+        end)
+
+        -- 2. Link MotionBankAsset from Player
         local p_asset = nil
         pcall(function() p_asset = p_motion:call("get_MotionBankAsset") end)
         local c_asset = nil
@@ -654,30 +670,33 @@ local function link_and_play_motion(body_obj)
 
         log_debug("MotionBank Status: PlayerAsset=" .. tostring(p_asset) .. ", ClaireAsset=" .. tostring(c_asset))
 
-        -- If Claire doesn't have a motion bank asset, borrow the player's active survivor motion bank
-        if not c_asset and p_asset then
-            c_motion:call("set_MotionBankAsset", p_asset)
+        if p_asset then
+            pcall(function() c_motion:call("set_MotionBankAsset", p_asset) end)
             pcall(function() c_motion:call("setupMotionBank") end)
             log_debug("Assigned Player MotionBankAsset to Claire Motion.")
         end
 
+        -- 3. Configure Layer 0
         local p_l0 = p_motion:call("getLayer", 0)
         local c_l0 = c_motion:call("getLayer", 0)
 
         if p_l0 and c_l0 then
-            local p_bid = p_l0:call("get_MotionBankID") or 0
-            local p_mid = p_l0:call("get_MotionID") or 0
+            local p_bid = p_l0:call("get_MotionBankID") or 1
+            local p_mid = p_l0:call("get_MotionID") or 160
             log_debug(string.format("Player Layer 0: BankID=%s, MotionID=%s", tostring(p_bid), tostring(p_mid)))
 
-            -- Assign motion to Claire's Layer 0
-            local ok_c = pcall(function()
-                c_l0:call("changeMotion(System.UInt32, System.UInt32)", p_bid, p_mid)
-            end)
-            if not ok_c then
-                pcall(function() c_l0:call("changeMotion", p_bid, p_mid) end)
-            end
+            -- Assign bank and motion using direct property setters
+            pcall(function() c_l0:call("set_MotionBankID", p_bid) end)
+            pcall(function() c_l0:call("set_MotionID", p_mid) end)
             pcall(function() c_l0:call("set_Speed", 1.0) end)
-            log_debug(string.format("Attempted changeMotion on Claire with BankID=%s, MotionID=%s (Result: %s)", tostring(p_bid), tostring(p_mid), tostring(ok_c)))
+            pcall(function() c_l0:call("set_PlayReset", true) end)
+            pcall(function() c_l0:call("resetFrame") end)
+
+            -- Also try changeMotion
+            local ok_c1 = pcall(function() c_l0:call("changeMotion", p_mid) end)
+            local ok_c4 = pcall(function() c_l0:call("changeMotion", p_bid, p_mid, 10.0, 0) end)
+
+            log_debug(string.format("Layer 0 Setup complete (mid=%s, change1=%s, change4=%s)", tostring(p_mid), tostring(ok_c1), tostring(ok_c4)))
         end
     end)
 end
@@ -686,34 +705,65 @@ end
 local function update_companion_animation(body_obj, current_speed)
     if not body_obj then return end
 
+    -- Initialize ONCE upon spawn!
+    if not spawner.motion_initialized then
+        spawner.motion_initialized = true
+        link_and_play_motion(body_obj)
+        return
+    end
+
     pcall(function()
         local motion = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
         if not motion then return end
 
-        local layer_count = motion:call("getLayerCount") or 0
-        if layer_count == 0 then return end
-
         local layer0 = motion:call("getLayer", 0)
         if not layer0 then return end
 
-        -- If MotionID is still unassigned (-1), link and assign motion
-        local cur_mid = layer0:call("get_MotionID") or 4294967295
-        if cur_mid == 4294967295 or cur_mid == -1 then
-            link_and_play_motion(body_obj)
+        -- Diagnostic: Every 120 frames (~2 seconds), log animation frame advancement
+        spawner.anim_tick_count = (spawner.anim_tick_count or 0) + 1
+        if spawner.anim_tick_count >= 120 then
+            spawner.anim_tick_count = 0
+            local c_mid = layer0:call("get_MotionID")
+            local c_frame = layer0:call("get_Frame")
+            local c_end = layer0:call("get_EndFrame")
+            local c_spd = layer0:call("get_Speed")
+            log_debug(string.format("Anim Telemetry: MotionID=%s, Frame=%.1f/%.1f, Speed=%.2f", tostring(c_mid), c_frame or 0, c_end or 0, c_spd or 0))
         end
 
-        -- If moving, set walking/jogging animation speed; if idle, keep idle pace
+        -- Determine Target Animation State (Walk vs Idle)
+        local target_state = (current_speed >= 0.1) and "WALK" or "IDLE"
+
+        if target_state ~= spawner.last_anim_state then
+            spawner.last_anim_state = target_state
+            log_debug("Companion Animation State Changed to: " .. target_state)
+
+            -- Query Leon's active motion clip
+            local player = spawner.get_master_player()
+            local player_go = spawner.get_player_game_object(player)
+            local p_motion = player_go and player_go:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+            local p_l0 = p_motion and p_motion:call("getLayer", 0)
+            local p_bid = p_l0 and p_l0:call("get_MotionBankID") or 1
+            local p_mid = p_l0 and p_l0:call("get_MotionID")
+
+            if p_mid then
+                pcall(function() layer0:call("set_MotionBankID", p_bid) end)
+                pcall(function() layer0:call("set_MotionID", p_mid) end)
+                pcall(function() layer0:call("changeMotion", p_mid) end)
+                log_debug(string.format("Transitioned Claire to %s (BankID=%s, MotionID=%s)", target_state, tostring(p_bid), tostring(p_mid)))
+            end
+        end
+
+        -- Smooth speed scaling
         local target_anim_speed = 1.0
         if current_speed < 0.1 then
-            target_anim_speed = 0.8 -- Natural idle breathing pace
+            target_anim_speed = 0.8
         elseif current_speed >= 3.0 then
-            target_anim_speed = 1.4 -- Jog pace
+            target_anim_speed = 1.4
         else
-            target_anim_speed = 1.0 -- Walk pace
+            target_anim_speed = 1.0
         end
 
         pcall(function() layer0:call("set_Speed", target_anim_speed) end)
-        pcall(function() layer0:call("set_SpeedRate", target_anim_speed) end)
     end)
 end
 
