@@ -1,101 +1,45 @@
 --[[
-    Resident Evil 2: Duo Mode — Claire Redfield Spawner & Multi-Part Assembler
+    Resident Evil 2: Duo Mode — Claire Redfield Spawner
     Script: character_renderer.lua
-    Purpose: Dedicated harness to assemble and render Claire Redfield (Body, Head/Face, Hair) into the 3D viewport.
+    Purpose: Dedicated harness to spawn Claire Redfield (PL1000) into the 3D viewport and inspect survivor anatomy.
     Author: AryanTechie-007
 ]]
+
+local function log_debug(msg)
+    pcall(function()
+        local f = io.open("reframework/data/spawner_debug.txt", "a")
+        if f then
+            f:write(os.date("[%H:%M:%S] ") .. tostring(msg) .. "\n")
+            f:close()
+        end
+    end)
+    if log and log.info then
+        log.info("[Spawner] " .. tostring(msg))
+    end
+end
+
+log_debug("=== Claire Redfield Spawner Loading ===")
 
 local spawner = {}
 spawner.spawned_entities = {}
 spawner.last_status = "Ready - Standing by"
 spawner.pending_action = nil
 
--- Multi-part streaming state
-spawner.streaming = false
-spawner.stream_frames = 0
-spawner.stream_body = nil
-spawner.stream_head = nil
-spawner.stream_hair = nil
-spawner.target_costume = 0
+-- Streaming State
+spawner.loading_prefab = nil
+spawner.loading_path = ""
+spawner.loading_frames = 0
+spawner.load_mode = "body_only" -- "body_only" or "modular"
 
--- Resolved part paths
-spawner.resolved_body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb"
-spawner.resolved_head = nil
-spawner.resolved_hair = nil
+-- Secondary Prefabs for Modular Mode
+spawner.loading_head_prefab = nil
+spawner.loading_hair_prefab = nil
 
-local REPORT_FILE = "reframework/autorun/claire_assembly_report.txt"
-
-local function log_msg(str)
-    if log and log.info then
-        log.info("[Spawner] " .. tostring(str))
-    end
-end
+-- Inspection state
+spawner.leon_inspected = false
 
 -- =========================================================================
--- 1. Candidate Prefab Paths (RE Engine Taxonomy)
--- =========================================================================
-local HEAD_CANDIDATES = {
-    -- pl1050: RE2 Remake standard identifier for Claire's Head/Face
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_head_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_face_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_head.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_face.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_head_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_face_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_head_costume_1.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1050/pl1050_face_costume_1.pfb",
-    "objectroot/prefab/character/survivor/pl1050.pfb",
-
-    -- pl1000: alternate placement in main character parts directory
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_head_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_head.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_head_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_head_costume_1.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_1.pfb"
-}
-
-local HAIR_CANDIDATES = {
-    -- pl1070: RE2 Remake standard identifier for Claire's Hair
-    "objectroot/prefab/character/survivor/parts/pl1070/pl1070_hair_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1070/pl1070_hair_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1070/pl1070_hair.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1070/pl1070.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1070/pl1070_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1070/pl1070_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1070/pl1070_hair_costume_1.pfb",
-    "objectroot/prefab/character/survivor/pl1070.pfb",
-
-    -- pl1000: alternate placement in main character parts directory
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair.pfb",
-    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_1.pfb"
-}
-
-local LEON_CANDIDATES = {
-    "objectroot/prefab/character/survivor/parts/pl0000/pl0000_body_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0000/pl0000_head_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0000/pl0000_face_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0000/pl0000_hair_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0050/pl0050_head_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0050/pl0050_face_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0050/pl0050_head.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0050/pl0050_face.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0050/pl0050.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0070/pl0070_hair_costume_0.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0070/pl0070_hair_costume_a.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0070/pl0070_hair.pfb",
-    "objectroot/prefab/character/survivor/parts/pl0070/pl0070.pfb"
-}
-
--- =========================================================================
--- 2. Helper: Transform & Math Utilities
+-- 1. Helper: Safe Yaw and Forward Vector Extraction
 -- =========================================================================
 local function get_yaw_from_transform(tf)
     if not tf or not tf.call then return 0.0 end
@@ -129,7 +73,7 @@ local function get_front_spawn_position(player_tf, dist)
 end
 
 -- =========================================================================
--- 3. Player Resolution
+-- 2. Player Resolution
 -- =========================================================================
 function spawner.get_master_player()
     local player_man = sdk.get_managed_singleton("app.ropeway.PlayerManager")
@@ -154,99 +98,47 @@ function spawner.get_player_game_object(player)
 end
 
 -- =========================================================================
--- 4. Deep Inspection & Archive Scan Engine
+-- 3. Scene Inspector: Analyze Active Player Anatomy
 -- =========================================================================
-function spawner.scan_archives_and_inspect()
-    local report = {}
-    table.insert(report, "=======================================================")
-    table.insert(report, "RE2 DUO MODE: CLAIRE REDFIELD ASSET SCAN & REPORT")
-    table.insert(report, "Generated at: " .. os.date())
-    table.insert(report, "=======================================================\n")
-
-    -- SECTION A: Check Claire Head Candidates
-    table.insert(report, "--- [1] SCANNING CLAIRE HEAD / FACE PREFABS ---")
-    local found_head = nil
-    for _, path in ipairs(HEAD_CANDIDATES) do
-        local pfb = nil
-        pcall(function()
-            pfb = sdk.create_instance("via.Prefab"):add_ref()
-            pfb:call("set_Path", path)
-        end)
-        local exists = false
-        if pfb then pcall(function() exists = pfb:call("get_Exist") end) end
-        if exists == true then
-            table.insert(report, "  [EXISTS: TRUE]  " .. path)
-            if not found_head then found_head = path end
-        else
-            table.insert(report, "  [EXISTS: FALSE] " .. path)
-        end
-    end
-
-    -- SECTION B: Check Claire Hair Candidates
-    table.insert(report, "\n--- [2] SCANNING CLAIRE HAIR PREFABS ---")
-    local found_hair = nil
-    for _, path in ipairs(HAIR_CANDIDATES) do
-        local pfb = nil
-        pcall(function()
-            pfb = sdk.create_instance("via.Prefab"):add_ref()
-            pfb:call("set_Path", path)
-        end)
-        local exists = false
-        if pfb then pcall(function() exists = pfb:call("get_Exist") end) end
-        if exists == true then
-            table.insert(report, "  [EXISTS: TRUE]  " .. path)
-            if not found_hair then found_hair = path end
-        else
-            table.insert(report, "  [EXISTS: FALSE] " .. path)
-        end
-    end
-
-    -- SECTION C: Check Leon Baseline
-    table.insert(report, "\n--- [3] SCANNING LEON BASELINE PREFABS ---")
-    for _, path in ipairs(LEON_CANDIDATES) do
-        local pfb = nil
-        pcall(function()
-            pfb = sdk.create_instance("via.Prefab"):add_ref()
-            pfb:call("set_Path", path)
-        end)
-        local exists = false
-        if pfb then pcall(function() exists = pfb:call("get_Exist") end) end
-        if exists == true then
-            table.insert(report, "  [EXISTS: TRUE]  " .. path)
-        else
-            table.insert(report, "  [EXISTS: FALSE] " .. path)
-        end
-    end
-
-    -- SECTION D: Inspect Leon Hierarchy in Scene
-    table.insert(report, "\n--- [4] ACTIVE SCENE: LEON GAMEOBJECT HIERARCHY ---")
+function spawner.inspect_active_player()
+    if spawner.leon_inspected then return end
     local player = spawner.get_master_player()
+    if not player then return end
     local pgo = spawner.get_player_game_object(player)
-    if pgo then
-        local pname = "unknown"
-        pcall(function() pname = pgo:call("get_Name") end)
-        table.insert(report, "Player GameObject Name: " .. tostring(pname))
-        
+    if not pgo then return end
+
+    spawner.leon_inspected = true
+    pcall(function()
+        local f = io.open("reframework/data/leon_inspection.txt", "w")
+        if not f then return end
+
+        f:write("=======================================================\n")
+        f:write("RE2 DUO MODE: ACTIVE SCENE PLAYER INSPECTION\n")
+        f:write("Time: " .. os.date() .. "\n")
+        f:write("=======================================================\n\n")
+        f:write("Player GameObject Name: " .. tostring(pgo:call("get_Name")) .. "\n")
+
         -- Components on player
-        local ccount = 0
-        pcall(function() ccount = pgo:call("get_ComponentCount") or 0 end)
-        table.insert(report, "Player Component Count: " .. tostring(ccount))
-        for i = 0, math.min(ccount - 1, 30) do
+        local comp_count = 0
+        pcall(function() comp_count = pgo:call("get_ComponentCount") or 0 end)
+        f:write("Total Components: " .. tostring(comp_count) .. "\n")
+        for i = 0, comp_count - 1 do
             pcall(function()
                 local comp = pgo:call("getComponent(System.Int32)", i)
                 local td = comp and comp:get_type_definition()
-                table.insert(report, string.format("  Comp [%d]: %s", i, td and td:get_full_name() or "nil"))
+                local cname = td and td:get_full_name() or "unknown"
+                f:write(string.format("  [Comp %d] %s\n", i, cname))
             end)
         end
 
-        -- Child Transforms
+        -- Transform Children
         local tf = nil
         pcall(function() tf = pgo:call("get_Transform") end)
         if tf then
             local child_count = 0
             pcall(function() child_count = tf:call("get_ChildCount") or 0 end)
-            table.insert(report, "Player Child Count: " .. tostring(child_count))
-            for i = 0, math.min(child_count - 1, 20) do
+            f:write("\nTransform Children Count: " .. tostring(child_count) .. "\n")
+            for i = 0, child_count - 1 do
                 pcall(function()
                     local ch_tf = tf:call("get_Child(System.Int32)", i) or tf:call("get_Child", i)
                     if ch_tf then
@@ -255,66 +147,29 @@ function spawner.scan_archives_and_inspect()
                         local pjoint = nil
                         pcall(function() pjoint = ch_tf:call("get_ParentJoint") end)
                         local pj_name = pjoint and pjoint.call and pjoint:call("get_Name") or "none"
-                        table.insert(report, string.format("  Child [%d]: name='%s', parent_joint='%s'", i, tostring(ch_name), tostring(pj_name)))
+                        f:write(string.format("  [Child %d] name='%s', parent_joint='%s'\n", i, tostring(ch_name), tostring(pj_name)))
+
+                        if ch_go then
+                            local ch_comp_count = ch_go:call("get_ComponentCount") or 0
+                            for j = 0, ch_comp_count - 1 do
+                                local ch_comp = ch_go:call("getComponent(System.Int32)", j)
+                                local ch_td = ch_comp and ch_comp:get_type_definition()
+                                f:write(string.format("     -> Comp: %s\n", ch_td and ch_td:get_full_name() or "unknown"))
+                            end
+                        end
                     end
                 end)
             end
         end
-    else
-        table.insert(report, "Leon GameObject not currently active in scene.")
-    end
 
-    table.insert(report, "\n=======================================================")
-    table.insert(report, "ASSET SCAN COMPLETE")
-    table.insert(report, "Resolved Head: " .. tostring(found_head or "NOT FOUND IN ARCHIVES"))
-    table.insert(report, "Resolved Hair: " .. tostring(found_hair or "NOT FOUND IN ARCHIVES"))
-    table.insert(report, "=======================================================")
-
-    -- Cache resolved paths
-    spawner.resolved_head = found_head
-    spawner.resolved_hair = found_hair
-
-    -- Write to disk report file
-    local report_text = table.concat(report, "\n")
-    pcall(function()
-        local f = io.open(REPORT_FILE, "w")
-        if f then
-            f:write(report_text .. "\n")
-            f:close()
-        end
-    end)
-
-    log_msg("Asset scan completed. Best Head: " .. tostring(found_head) .. ", Best Hair: " .. tostring(found_hair))
-    return report_text
-end
-
--- =========================================================================
--- 5. Multi-Part Child Attachment
--- =========================================================================
-local function attach_child_part(child_go, body_go)
-    if not child_go or not body_go then return end
-    pcall(function()
-        local body_tf = body_go:call("get_Transform")
-        local child_tf = child_go:call("get_Transform")
-        if body_tf and child_tf then
-            child_tf:call("set_Parent", body_tf)
-
-            -- Align local origin
-            local zero_vec = (Vector3f and Vector3f.new and Vector3f.new(0, 0, 0)) or { x = 0, y = 0, z = 0 }
-            pcall(function() child_tf:call("set_LocalPosition", zero_vec) end)
-
-            local identity_rot = (Quaternion and Quaternion.new and Quaternion.new(0, 0, 0, 1)) or { x = 0, y = 0, z = 0, w = 1 }
-            pcall(function() child_tf:call("set_LocalRotation", identity_rot) end)
-        end
-    end)
-    pcall(function()
-        child_go:call("set_DrawSelf", true)
-        child_go:call("set_UpdateSelf", true)
+        f:write("\n=======================================================\n")
+        f:close()
+        log_debug("Active player hierarchy inspection written to reframework/data/leon_inspection.txt")
     end)
 end
 
 -- =========================================================================
--- 6. Despawn Logic
+-- 4. Despawn Logic
 -- =========================================================================
 function spawner.execute_despawn()
     local scene_man = sdk.get_native_singleton("via.SceneManager")
@@ -333,86 +188,101 @@ function spawner.execute_despawn()
         end)
     end
     spawner.spawned_entities = {}
-    spawner.streaming = false
-    spawner.stream_body = nil
-    spawner.stream_head = nil
-    spawner.stream_hair = nil
+    spawner.loading_prefab = nil
+    spawner.loading_head_prefab = nil
+    spawner.loading_hair_prefab = nil
     spawner.last_status = "Despawned"
-    log_msg("All Claire entities despawned cleanly.")
+    log_debug("Despawn executed.")
 end
 
 -- =========================================================================
--- 7. Multi-Part Claire Spawning Pipeline
+-- 5. Primary Spawner: Guaranteed Body Instantiation (Verified Working)
 -- =========================================================================
-function spawner.spawn_claire(costume_index)
-    costume_index = costume_index or 0
+function spawner.spawn_claire_body(costume_index)
     spawner.execute_despawn()
-    spawner.target_costume = costume_index
-
-    -- Run asset scan if not already done
-    if not spawner.resolved_head or not spawner.resolved_hair then
-        spawner.scan_archives_and_inspect()
-    end
+    costume_index = costume_index or 0
 
     local body_path = string.format("objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_%d.pfb", costume_index)
-    local head_path = spawner.resolved_head or "objectroot/prefab/character/survivor/parts/pl1050/pl1050_head_costume_0.pfb"
-    local hair_path = spawner.resolved_hair or "objectroot/prefab/character/survivor/parts/pl1070/pl1070_hair_costume_0.pfb"
+    log_debug("Starting Claire Body Stream: " .. body_path)
 
-    log_msg("Initiating multi-part streaming:")
-    log_msg("  Body: " .. body_path)
-    log_msg("  Head: " .. tostring(head_path))
-    log_msg("  Hair: " .. tostring(hair_path))
+    local pfb = nil
+    pcall(function()
+        pfb = sdk.create_instance("via.Prefab"):add_ref()
+        pfb:call("set_Path", body_path)
+        pfb:call("set_Standby", true)
+    end)
 
-    -- Stream Body
-    local b_pfb = sdk.create_instance("via.Prefab"):add_ref()
-    b_pfb:call("set_Path", body_path)
-    b_pfb:call("set_Standby", true)
-    spawner.stream_body = b_pfb
-
-    -- Stream Head (if path exists)
-    if head_path then
-        local h_pfb = sdk.create_instance("via.Prefab"):add_ref()
-        h_pfb:call("set_Path", head_path)
-        h_pfb:call("set_Standby", true)
-        spawner.stream_head = h_pfb
+    if not pfb then
+        spawner.last_status = "Failed: Could not create via.Prefab"
+        log_debug("Failed to create via.Prefab instance.")
+        return
     end
 
-    -- Stream Hair (if path exists)
-    if hair_path then
-        local hr_pfb = sdk.create_instance("via.Prefab"):add_ref()
-        hr_pfb:call("set_Path", hair_path)
-        hr_pfb:call("set_Standby", true)
-        spawner.stream_hair = hr_pfb
-    end
-
-    spawner.streaming = true
-    spawner.stream_frames = 0
-    spawner.last_status = "Streaming Claire parts from archives..."
+    spawner.loading_prefab = pfb
+    spawner.loading_path = body_path
+    spawner.loading_frames = 0
+    spawner.load_mode = "body_only"
+    spawner.last_status = "Streaming Claire body from archives..."
 end
 
 -- =========================================================================
--- 8. Master Frame Loop (re.on_frame)
+-- 6. Experimental Modular Spawner: Body + Head + Hair
+-- =========================================================================
+function spawner.spawn_claire_modular(costume_index)
+    spawner.execute_despawn()
+    costume_index = costume_index or 0
+
+    local body_path = string.format("objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_%d.pfb", costume_index)
+    local head_path = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb"
+    local hair_path = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb"
+
+    log_debug("Starting Modular Assembly Stream:")
+    log_debug("  Body: " .. body_path)
+    log_debug("  Head: " .. head_path)
+    log_debug("  Hair: " .. hair_path)
+
+    local b_pfb, h_pfb, hr_pfb = nil, nil, nil
+    pcall(function()
+        b_pfb = sdk.create_instance("via.Prefab"):add_ref()
+        b_pfb:call("set_Path", body_path)
+        b_pfb:call("set_Standby", true)
+    end)
+    pcall(function()
+        h_pfb = sdk.create_instance("via.Prefab"):add_ref()
+        h_pfb:call("set_Path", head_path)
+        h_pfb:call("set_Standby", true)
+    end)
+    pcall(function()
+        hr_pfb = sdk.create_instance("via.Prefab"):add_ref()
+        hr_pfb:call("set_Path", hair_path)
+        hr_pfb:call("set_Standby", true)
+    end)
+
+    spawner.loading_prefab = b_pfb
+    spawner.loading_head_prefab = h_pfb
+    spawner.loading_hair_prefab = hr_pfb
+    spawner.loading_frames = 0
+    spawner.load_mode = "modular"
+    spawner.last_status = "Streaming Body + Head + Hair..."
+end
+
+-- =========================================================================
+-- 7. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
+    -- Auto-inspect player once loaded
+    if not spawner.leon_inspected then
+        pcall(spawner.inspect_active_player)
+    end
+
     -- Asynchronous Streaming Tick
-    if spawner.streaming then
-        spawner.stream_frames = spawner.stream_frames + 1
+    if spawner.loading_prefab then
+        spawner.loading_frames = spawner.loading_frames + 1
+        local pfb = spawner.loading_prefab
+        local is_ready = false
+        pcall(function() is_ready = pfb:call("get_Ready") end)
 
-        local body_ready = false
-        pcall(function() body_ready = spawner.stream_body and spawner.stream_body:call("get_Ready") end)
-
-        local head_ready = true
-        if spawner.stream_head then
-            pcall(function() head_ready = spawner.stream_head:call("get_Ready") end)
-        end
-
-        local hair_ready = true
-        if spawner.stream_hair then
-            pcall(function() hair_ready = spawner.stream_hair:call("get_Ready") end)
-        end
-
-        -- Check if all parts ready OR if body ready and timeout reached
-        if (body_ready and head_ready and hair_ready) or (body_ready and spawner.stream_frames > 180) then
+        if is_ready then
             local player = spawner.get_master_player()
             local player_go = spawner.get_player_game_object(player)
             local player_tf = player_go and player_go:call("get_Transform")
@@ -421,11 +291,11 @@ re.on_frame(function()
 
             -- 1. Instantiate Body
             local body_go = nil
-            pcall(function()
-                body_go = spawner.stream_body:call("instantiate(via.vec3)", vpos)
+            local ok_spawn, err = pcall(function()
+                body_go = pfb:call("instantiate(via.vec3)", vpos)
             end)
 
-            if body_go then
+            if ok_spawn and body_go then
                 pcall(function() body_go:add_ref() end)
                 local b_tf = body_go.call and body_go:call("get_Transform")
                 if b_tf then
@@ -436,90 +306,107 @@ re.on_frame(function()
                     body_go:call("set_UpdateSelf", true)
                 end)
                 table.insert(spawner.spawned_entities, body_go)
+                log_debug("Body successfully instantiated in viewport.")
 
-                -- 2. Instantiate Head
-                if spawner.stream_head and head_ready then
-                    local head_go = nil
-                    pcall(function()
-                        head_go = spawner.stream_head:call("instantiate(via.vec3)", vpos)
-                    end)
-                    if head_go then
-                        pcall(function() head_go:add_ref() end)
-                        attach_child_part(head_go, body_go)
-                        table.insert(spawner.spawned_entities, head_go)
-                        log_msg("Head part assembled and attached.")
+                -- 2. If modular mode, attach head and hair
+                if spawner.load_mode == "modular" then
+                    -- Head
+                    if spawner.loading_head_prefab then
+                        local h_ready = false
+                        pcall(function() h_ready = spawner.loading_head_prefab:call("get_Ready") end)
+                        if h_ready then
+                            local head_go = nil
+                            pcall(function()
+                                head_go = spawner.loading_head_prefab:call("instantiate(via.vec3)", vpos)
+                            end)
+                            if head_go then
+                                pcall(function() head_go:add_ref() end)
+                                pcall(function()
+                                    local h_tf = head_go:call("get_Transform")
+                                    if h_tf and b_tf then
+                                        h_tf:call("set_Parent", b_tf)
+                                    end
+                                    head_go:call("set_DrawSelf", true)
+                                    head_go:call("set_UpdateSelf", true)
+                                end)
+                                table.insert(spawner.spawned_entities, head_go)
+                                log_debug("Head successfully instantiated and attached.")
+                            end
+                        end
+                    end
+
+                    -- Hair
+                    if spawner.loading_hair_prefab then
+                        local hr_ready = false
+                        pcall(function() hr_ready = spawner.loading_hair_prefab:call("get_Ready") end)
+                        if hr_ready then
+                            local hair_go = nil
+                            pcall(function()
+                                hair_go = spawner.loading_hair_prefab:call("instantiate(via.vec3)", vpos)
+                            end)
+                            if hair_go then
+                                pcall(function() hair_go:add_ref() end)
+                                pcall(function()
+                                    local hr_tf = hair_go:call("get_Transform")
+                                    if hr_tf and b_tf then
+                                        hr_tf:call("set_Parent", b_tf)
+                                    end
+                                    hair_go:call("set_DrawSelf", true)
+                                    hair_go:call("set_UpdateSelf", true)
+                                end)
+                                table.insert(spawner.spawned_entities, hair_go)
+                                log_debug("Hair successfully instantiated and attached.")
+                            end
+                        end
                     end
                 end
 
-                -- 3. Instantiate Hair
-                if spawner.stream_hair and hair_ready then
-                    local hair_go = nil
-                    pcall(function()
-                        hair_go = spawner.stream_hair:call("instantiate(via.vec3)", vpos)
-                    end)
-                    if hair_go then
-                        pcall(function() hair_go:add_ref() end)
-                        attach_child_part(hair_go, body_go)
-                        table.insert(spawner.spawned_entities, hair_go)
-                        log_msg("Hair part assembled and attached.")
-                    end
-                end
-
-                local part_count = #spawner.spawned_entities
-                if part_count >= 3 then
+                local total_parts = #spawner.spawned_entities
+                if total_parts >= 3 then
                     spawner.last_status = "SUCCESS: CLAIRE FULLY RENDERED (Body + Head + Hair)!"
-                elseif part_count == 2 then
-                    spawner.last_status = "CLAIRE RENDERED (Body + 1 Modular Part Attached)"
                 else
-                    spawner.last_status = "CLAIRE BODY RENDERED IN VIEWPORT"
+                    spawner.last_status = "CLAIRE RENDERED IN VIEWPORT!"
                 end
-                log_msg("Spawning completed with " .. tostring(part_count) .. " parts assembled.")
+                log_debug("Spawn completed. Total parts in scene: " .. tostring(total_parts))
             else
-                spawner.last_status = "Body instantiation failed."
-                log_msg("Body instantiation failed or returned nil.")
+                spawner.last_status = "Instantiation failed"
+                log_debug("Body instantiate failed: " .. tostring(err))
             end
 
-            spawner.streaming = false
-            spawner.stream_body = nil
-            spawner.stream_head = nil
-            spawner.stream_hair = nil
-        elseif spawner.stream_frames > 240 then
-            spawner.last_status = "Streaming timed out waiting for assets."
-            spawner.streaming = false
-            spawner.stream_body = nil
-            spawner.stream_head = nil
-            spawner.stream_hair = nil
+            spawner.loading_prefab = nil
+            spawner.loading_head_prefab = nil
+            spawner.loading_hair_prefab = nil
+        elseif spawner.loading_frames > 180 then
+            spawner.last_status = "Streaming timed out"
+            log_debug("Streaming timed out at frame 180.")
+            spawner.loading_prefab = nil
+            spawner.loading_head_prefab = nil
+            spawner.loading_hair_prefab = nil
         end
     end
 
     -- Process pending action
-    if spawner.pending_action == "spawn_default" then
+    if spawner.pending_action == "spawn_body" then
         spawner.pending_action = nil
-        pcall(function() spawner.spawn_claire(0) end)
+        pcall(function() spawner.spawn_claire_body(0) end)
+    elseif spawner.pending_action == "spawn_modular" then
+        spawner.pending_action = nil
+        pcall(function() spawner.spawn_claire_modular(0) end)
     elseif spawner.pending_action == "spawn_tank" then
         spawner.pending_action = nil
-        pcall(function() spawner.spawn_claire(1) end)
+        pcall(function() spawner.spawn_claire_body(1) end)
     elseif spawner.pending_action == "despawn" then
         spawner.pending_action = nil
         pcall(spawner.execute_despawn)
     end
 end)
 
--- Initial archive scan on script startup
-pcall(function()
-    spawner.scan_archives_and_inspect()
-end)
-
 -- =========================================================================
--- 9. Clean, Minimalist ImGui Spawner UI (No Diagnostic Clutter)
+-- 8. Clean, Minimalist ImGui Spawner UI
 -- =========================================================================
 local function draw_spawner_ui()
     imgui.text_colored("=== RE2 DUO MODE: CLAIRE REDFIELD SPAWNER ===", 0.3, 0.9, 1.0, 1.0)
     imgui.text("Status: " .. tostring(spawner.last_status))
-    
-    local h_status = spawner.resolved_head and "Found" or "Scanning"
-    local hr_status = spawner.resolved_hair and "Found" or "Scanning"
-    imgui.text(string.format("Assets: Body=OK | Head=%s | Hair=%s", h_status, hr_status))
     imgui.separator()
 
     local player = spawner.get_master_player()
@@ -527,16 +414,21 @@ local function draw_spawner_ui()
         imgui.text_colored("Player (Leon): ACTIVE IN SCENE", 0.2, 1.0, 0.4, 1.0)
         imgui.spacing()
 
-        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Full Character) <<<") then
-            spawner.pending_action = "spawn_default"
+        if imgui.button(">>> SPAWN CLAIRE REDFIELD (Instant Spawn) <<<") then
+            spawner.pending_action = "spawn_body"
         end
 
         imgui.spacing()
+        if imgui.button("Spawn Claire + Head/Hair (Modular Test)") then
+            spawner.pending_action = "spawn_modular"
+        end
+
+        imgui.same_line()
         if imgui.button("Spawn Claire (Tank Top)") then
             spawner.pending_action = "spawn_tank"
         end
 
-        imgui.same_line()
+        imgui.spacing()
         if imgui.button("Despawn Claire") then
             spawner.pending_action = "despawn"
         end
