@@ -568,6 +568,7 @@ function spawner.execute_despawn()
     spawner.is_on_elevator = false
     spawner.elevator_transform = nil
     spawner.cutscene_active = false
+    spawner.layer_logged = false
     spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
     spawner.last_status = "Despawned - Standing by"
     log_debug("Despawn executed cleanly.")
@@ -627,8 +628,66 @@ function spawner.start_spawn(mode)
 end
 
 -- =========================================================================
--- 7. Companion Locomotion Controller (Runs In-Script)
+-- 7. Companion Animation & Locomotion Controllers
 -- =========================================================================
+
+spawner.layer_logged = false
+
+-- Update companion animation layer based on locomotion speed
+local function update_companion_animation(body_obj, current_speed)
+    if not body_obj then return end
+
+    pcall(function()
+        local motion = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+        if not motion then return end
+
+        local layer_count = motion:call("getLayerCount") or 0
+        if layer_count == 0 then return end
+
+        local layer0 = motion:call("getLayer", 0)
+        if not layer0 then return end
+
+        -- Log layer0 info once on spawn to reveal animation setup
+        if not spawner.layer_logged then
+            spawner.layer_logged = true
+            local mid = nil
+            local bid = nil
+            local spd = nil
+            pcall(function() mid = layer0:call("get_MotionID") end)
+            pcall(function() bid = layer0:call("get_BankID") end)
+            pcall(function() spd = layer0:call("get_Speed") end)
+            log_debug(string.format("Claire Layer0 Animation: BankID=%s, MotionID=%s, Speed=%s", tostring(bid), tostring(mid), tostring(spd)))
+
+            -- Dump TreeLayer methods to discover all animation controls
+            pcall(function()
+                local td_l = layer0:get_type_definition()
+                local l_methods = td_l:get_methods()
+                log_debug("--- via.motion.TreeLayer Methods ---")
+                for _, lm in ipairs(l_methods) do
+                    local lmname = lm:get_name()
+                    if string.find(string.lower(lmname), "speed") or string.find(string.lower(lmname), "motion") or string.find(string.lower(lmname), "frame") or string.find(string.lower(lmname), "play") or string.find(string.lower(lmname), "state") then
+                        log_debug("  TreeLayer: " .. lmname .. " (" .. tostring(lm:get_num_params()) .. " params)")
+                    end
+                end
+            end)
+        end
+
+        -- If moving, set walking/jogging animation speed; if idle, keep idle pace
+        local target_anim_speed = 1.0
+        if current_speed < 0.1 then
+            target_anim_speed = 0.8 -- Natural idle breathing pace
+        elseif current_speed >= 3.0 then
+            target_anim_speed = 1.4 -- Jog pace
+        else
+            target_anim_speed = 1.0 -- Walk pace
+        end
+
+        pcall(function() layer0:call("set_Speed", target_anim_speed) end)
+        pcall(function() layer0:call("set_SpeedRate", target_anim_speed) end)
+        pcall(function() layer0:call("setSpeed", target_anim_speed) end)
+    end)
+end
+
 local function update_companion_locomotion(delta_time)
     if not spawner.follow_enabled then
         spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
@@ -772,6 +831,9 @@ local function update_companion_locomotion(delta_time)
             move_transform_safely(body_tf, body_obj, new_x, new_y, new_z)
         end
     end
+
+    -- Update companion walking/running animation
+    update_companion_animation(body_obj, spawner.current_speed)
 end
 
 -- =========================================================================
