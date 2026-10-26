@@ -10,18 +10,41 @@ spawner.spawned_entities = {}
 spawner.last_status = "Ready - Standing by (Click button to spawn)"
 spawner.click_count = 0
 
--- Multi-Part Streaming State
+-- Prefab candidates to scan on startup
+local BODY_CANDIDATES = {
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_a.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_1.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_2.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body.pfb",
+    "objectroot/prefab/character/survivor/pl1000.pfb",
+    "objectroot/prefab/character/player/pl1000.pfb"
+}
+
+local HEAD_CANDIDATES = {
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_1.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_head_costume_a.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face.pfb"
+}
+
+local HAIR_CANDIDATES = {
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_1.pfb",
+    "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair.pfb"
+}
+
+spawner.best_body = nil
+spawner.best_head = nil
+spawner.best_hair = nil
+
+-- Streaming State
 spawner.body_pfb = nil
 spawner.head_pfb = nil
 spawner.hair_pfb = nil
 spawner.streaming = false
 spawner.stream_frames = 0
-spawner.mode = "full" -- "full" or "body_only"
-
--- Exact Verified Character Paths (from RE2 archives)
-local PATH_BODY = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_0.pfb"
-local PATH_HEAD = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb"
-local PATH_HAIR = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb"
+spawner.mode = "full"
 
 local function log_debug(msg)
     pcall(function()
@@ -36,10 +59,68 @@ local function log_debug(msg)
     end
 end
 
-log_debug("=== Claire Redfield Spawner Loaded ===")
+-- =========================================================================
+-- 1. Scan and Resolve Valid Paths
+-- =========================================================================
+function spawner.scan_all_candidates()
+    log_debug("=== Scanning RE2 Pak Archives for Claire Parts ===")
+
+    -- Scan Bodies
+    for _, path in ipairs(BODY_CANDIDATES) do
+        local exists = false
+        pcall(function()
+            local pfb = sdk.create_instance("via.Prefab"):add_ref()
+            pfb:call("set_Path", path)
+            exists = pfb:call("get_Exist")
+        end)
+        if exists then
+            log_debug("  [BODY: TRUE]  " .. path)
+            if not spawner.best_body then spawner.best_body = path end
+        else
+            log_debug("  [BODY: FALSE] " .. path)
+        end
+    end
+
+    -- Scan Heads
+    for _, path in ipairs(HEAD_CANDIDATES) do
+        local exists = false
+        pcall(function()
+            local pfb = sdk.create_instance("via.Prefab"):add_ref()
+            pfb:call("set_Path", path)
+            exists = pfb:call("get_Exist")
+        end)
+        if exists then
+            log_debug("  [HEAD: TRUE]  " .. path)
+            if not spawner.best_head then spawner.best_head = path end
+        else
+            log_debug("  [HEAD: FALSE] " .. path)
+        end
+    end
+
+    -- Scan Hairs
+    for _, path in ipairs(HAIR_CANDIDATES) do
+        local exists = false
+        pcall(function()
+            local pfb = sdk.create_instance("via.Prefab"):add_ref()
+            pfb:call("set_Path", path)
+            exists = pfb:call("get_Exist")
+        end)
+        if exists then
+            log_debug("  [HAIR: TRUE]  " .. path)
+            if not spawner.best_hair then spawner.best_hair = path end
+        else
+            log_debug("  [HAIR: FALSE] " .. path)
+        end
+    end
+
+    log_debug("=== Resolution Complete ===")
+    log_debug("  Selected Body: " .. tostring(spawner.best_body))
+    log_debug("  Selected Head: " .. tostring(spawner.best_head))
+    log_debug("  Selected Hair: " .. tostring(spawner.best_hair))
+end
 
 -- =========================================================================
--- 1. Helper: Safe Yaw and Forward Vector Extraction
+-- 2. Helper: Safe Yaw and Forward Vector Extraction
 -- =========================================================================
 local function get_yaw_from_transform(tf)
     if not tf or not tf.call then return 0.0 end
@@ -76,7 +157,7 @@ local function get_front_spawn_position(player_tf, dist)
 end
 
 -- =========================================================================
--- 2. Player Resolution
+-- 3. Player Resolution
 -- =========================================================================
 function spawner.get_master_player()
     local player_man = nil
@@ -104,7 +185,7 @@ function spawner.get_player_game_object(player)
 end
 
 -- =========================================================================
--- 3. Despawn Logic
+-- 4. Despawn Logic
 -- =========================================================================
 function spawner.execute_despawn()
     pcall(function()
@@ -137,50 +218,60 @@ function spawner.execute_despawn()
 end
 
 -- =========================================================================
--- 4. Initiate Spawner Pipeline
+-- 5. Initiate Spawner Pipeline
 -- =========================================================================
 function spawner.start_spawn(mode)
     spawner.execute_despawn()
     spawner.mode = mode or "full"
-    spawner.streaming = true
-    spawner.stream_frames = 0
+
+    if not spawner.best_body then
+        spawner.scan_all_candidates()
+    end
+
+    local body_path = spawner.best_body or "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_a.pfb"
+    local head_path = spawner.best_head or "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb"
+    local hair_path = spawner.best_hair or "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb"
 
     log_debug("Starting Claire Spawn Pipeline (Mode: " .. spawner.mode .. "):")
-    log_debug("  Body: " .. PATH_BODY)
+    log_debug("  Body: " .. tostring(body_path))
     if spawner.mode == "full" then
-        log_debug("  Head: " .. PATH_HEAD)
-        log_debug("  Hair: " .. PATH_HAIR)
+        log_debug("  Head: " .. tostring(head_path))
+        log_debug("  Hair: " .. tostring(hair_path))
     end
 
     -- Create Body Prefab
     pcall(function()
         local b = sdk.create_instance("via.Prefab"):add_ref()
-        b:call("set_Path", PATH_BODY)
+        b:call("set_Path", body_path)
         b:call("set_Standby", true)
         spawner.body_pfb = b
     end)
 
     -- Create Head and Hair Prefabs if full mode
-    if spawner.mode == "full" then
+    if spawner.mode == "full" and head_path then
         pcall(function()
             local h = sdk.create_instance("via.Prefab"):add_ref()
-            h:call("set_Path", PATH_HEAD)
+            h:call("set_Path", head_path)
             h:call("set_Standby", true)
             spawner.head_pfb = h
         end)
+    end
+    if spawner.mode == "full" and hair_path then
         pcall(function()
             local hr = sdk.create_instance("via.Prefab"):add_ref()
-            hr:call("set_Path", PATH_HAIR)
+            hr:call("set_Path", hair_path)
             hr:call("set_Standby", true)
             spawner.hair_pfb = hr
         end)
     end
 
+    spawner.streaming = true
+    spawner.stream_frames = 0
     spawner.last_status = "Streaming Claire assets into memory... (Frame 0)"
 end
 
 -- =========================================================================
--- 5. Master Frame Loop (re.on_frame)
+-- 6. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
     if spawner.streaming and spawner.body_pfb then
@@ -289,14 +380,21 @@ re.on_frame(function()
     end
 end)
 
+-- Initial scan on script load
+pcall(spawner.scan_all_candidates)
+
 -- =========================================================================
--- 6. Clean, Minimalist ImGui Spawner UI
+-- 7. Clean, Minimalist ImGui Spawner UI
 -- =========================================================================
 local function draw_spawner_ui(suffix)
     suffix = suffix or ""
     imgui.text_colored("=== RE2 DUO MODE: CLAIRE REDFIELD SPAWNER ===", 0.3, 0.9, 1.0, 1.0)
     imgui.text("Status: " .. tostring(spawner.last_status))
-    imgui.text("Spawn Requests: " .. tostring(spawner.click_count))
+    
+    local b_name = spawner.best_body and spawner.best_body:match("([^/]+)$") or "Scanning..."
+    local h_name = spawner.best_head and spawner.best_head:match("([^/]+)$") or "Scanning..."
+    local hr_name = spawner.best_hair and spawner.best_hair:match("([^/]+)$") or "Scanning..."
+    imgui.text(string.format("Assets: %s | %s | %s", b_name, h_name, hr_name))
     imgui.separator()
 
     local player = spawner.get_master_player()
