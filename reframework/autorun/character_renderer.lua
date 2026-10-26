@@ -305,20 +305,120 @@ end
 -- 3. Day 3: Room Portal, Cutscene & Elevator Helpers
 -- =========================================================================
 
--- Query current room ID from RoomArea component
+local room_probed = false
+
+-- Probe and detect RE2's Room / Area system
+local function probe_room_system(player_go)
+    if room_probed then return end
+    room_probed = true
+
+    log_debug("=== Probing RE2 Room / Area Management Types ===")
+    local candidate_types = {
+        "app.ropeway.RoomArea",
+        "app.ropeway.RoomManager",
+        "app.ropeway.AreaManager",
+        "app.ropeway.gamemaster.RoomManager",
+        "app.ropeway.gamemaster.AreaManager",
+        "app.ropeway.ScenarioManager",
+        "app.ropeway.MapManager",
+        "app.ropeway.StageManager"
+    }
+
+    for _, name in ipairs(candidate_types) do
+        local td = sdk.find_type_definition(name)
+        if td then
+            log_debug("  [TYPE FOUND] " .. name)
+            local sing = sdk.get_managed_singleton(name)
+            if sing then
+                log_debug("    [SINGLETON ACTIVE] " .. name)
+                -- Dump methods on singleton
+                pcall(function()
+                    local methods = td:get_methods()
+                    for _, m in ipairs(methods) do
+                        local mname = m:get_name()
+                        if string.find(string.lower(mname), "room") or string.find(string.lower(mname), "area") or string.find(string.lower(mname), "stage") then
+                            log_debug("      Method: " .. mname)
+                        end
+                    end
+                end)
+            end
+        end
+    end
+
+    if player_go and player_go.call then
+        pcall(function()
+            local comps = player_go:call("get_Components"):get_elements()
+            if comps then
+                log_debug("  Player Components (" .. tostring(#comps) .. " total):")
+                for i, c in ipairs(comps) do
+                    local cname = "unknown"
+                    pcall(function() cname = c:get_type_definition():get_full_name() end)
+                    if string.find(string.lower(cname), "room") or string.find(string.lower(cname), "area") or string.find(string.lower(cname), "zone") or string.find(string.lower(cname), "survivor") or string.find(string.lower(cname), "condition") then
+                        log_debug("    [" .. i .. "] " .. cname)
+                    end
+                end
+            end
+        end)
+    end
+end
+
+-- Query current room ID from RoomArea or RoomManager
 local function get_room_id(game_obj)
     if not game_obj then return 0 end
-    local room_id = 0
+
+    -- Strategy A: via.GameObject RoomArea component
+    local r1 = 0
     pcall(function()
         local t = sdk.typeof("app.ropeway.RoomArea")
         if t and game_obj.call then
             local comp = game_obj:call("getComponent(System.Type)", t)
             if comp then
-                room_id = comp:call("get_CurrentRoomID") or 0
+                r1 = comp:call("get_CurrentRoomID") or 0
             end
         end
     end)
-    return room_id
+    if r1 and r1 ~= 0 then return r1 end
+
+    -- Strategy B: app.ropeway.RoomManager singleton
+    local r2 = 0
+    pcall(function()
+        local rm = sdk.get_managed_singleton("app.ropeway.RoomManager")
+                or sdk.get_managed_singleton("app.ropeway.gamemaster.RoomManager")
+        if rm then
+            r2 = rm:call("get_CurrentRoomID")
+               or rm:call("getCurrentRoomID")
+               or rm:call("get_CurrentRoom")
+               or rm:call("get_RoomID") or 0
+        end
+    end)
+    if r2 and r2 ~= 0 then return r2 end
+
+    -- Strategy C: app.ropeway.AreaManager singleton
+    local r3 = 0
+    pcall(function()
+        local am = sdk.get_managed_singleton("app.ropeway.AreaManager")
+        if am then
+            r3 = am:call("get_CurrentAreaID")
+               or am:call("getCurrentAreaID")
+               or am:call("get_AreaID") or 0
+        end
+    end)
+    if r3 and r3 ~= 0 then return r3 end
+
+    return 0
+end
+
+-- Update environment and room telemetry on every frame
+local function update_environment_telemetry()
+    local player = spawner.get_master_player()
+    local player_go = spawner.get_player_game_object(player)
+    if player_go then
+        probe_room_system(player_go)
+        local rid = get_room_id(player_go)
+        if rid and rid ~= 0 then
+            spawner.current_leader_room = rid
+        end
+    end
 end
 
 -- Query active cutscene status from CutsceneManager
@@ -777,7 +877,10 @@ re.on_frame(function()
         end
     end
 
-    -- B. Active Locomotion (Only runs when Claire is spawned)
+    -- B. Environment & Room Telemetry (Runs continuously every frame)
+    pcall(update_environment_telemetry)
+
+    -- C. Active Locomotion (Only runs when Claire is spawned)
     if #spawner.spawned_entities > 0 then
         pcall(function()
             update_companion_locomotion(dt)
