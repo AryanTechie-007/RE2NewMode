@@ -68,9 +68,11 @@ The following technical items have been deferred during Phase 1 to prioritize co
     * `[Follow Me]` resumes dynamic companion gliding alongside Leon.
     * `[Take Cover]` transitions into tight 0.95m formation with rear-guard outward orientation.
   - However, holding the keyboard hotkey `T` during live gameplay did not trigger the wheel or slow down time, and pressing `1` / `2` / `3` did not register via `reframework.is_key_down(key)`.
-* **Root Cause Analysis:**
-  - `reframework.is_key_down()` queries REFramework's internal input hook. When the REFramework UI overlay is closed and the game viewport has direct focus, DirectInput / raw Windows messages are captured directly by RE Engine's native input devices (`via.hid.Keyboard` / `app.ropeway.InputManager`), bypassing REFramework's standard message pump.
-* **Revisit Action Plan:**
-  - Query native RE Engine input device state via `sdk.get_native_singleton("via.hid.Keyboard")` or hook `via.hid.Keyboard:isDown()` directly in IL2CPP.
-  - Implement gamepad shoulder button polling (`via.hid.GamePadDevice`) for RB / R1.
-  - Maintain the working ImGui dashboard buttons as the primary reliable control surface in the interim.
+* **Root Cause & Technical Resolution:**
+  - `reframework.is_key_down()` was previously invoked with dot syntax (`reframework.is_key_down`) rather than colon syntax (`reframework:is_key_down`), and when the REFramework menu is closed, RE Engine captures raw DirectInput directly at the native driver level.
+  - Implemented multi-layer input polling engine in commit `950a2dd`:
+    1. Direct native hardware polling via `via.hid.Keyboard` (`get_Device` -> `isDown(via.hid.KeyboardKey.T)`).
+    2. Native gamepad polling via `via.hid.GamePad` (`getMergedDevice` -> `isDown(via.hid.GamePadButton.RShoulder)`).
+    3. REFramework colon syntax fallback (`reframework:is_key_down(0x54)`) and `reframework:get_keyboard_state()`.
+    4. Added **Toggle Mode** (`spawner.wheel_mode = "TOGGLE"`) alongside **Hold Mode** so players can simply tap `T` to open/close bullet-time comfortably.
+    5. Added live visual input diagnostics to the ImGui dashboard showing real-time trigger status, last key detected, and hook connectivity.
