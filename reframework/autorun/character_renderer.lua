@@ -74,7 +74,11 @@ spawner.command_wheel_open = false
 spawner.command_wheel_key = 0x54 -- 'T' Key (0x54) - Rebound from Middle Mouse to prevent camera reset conflict!
 spawner.key_names = { "T (Tactical / Orders)", "G (Guard)", "Q (Quick Command)", "Caps Lock", "Mouse 4 (Thumb)", "Mouse 5 (Thumb)" }
 spawner.key_codes = { 0x54, 0x47, 0x51, 0x14, 0x05, 0x06 }
+spawner.key_names_lookup = { "T", "G", "Q", "Capital", "XButton1", "XButton2" }
 spawner.selected_key_idx = 1
+spawner.wheel_mode = "HOLD" -- "HOLD" or "TOGGLE"
+spawner.wheel_modes = { "Hold Key (Release to Close)", "Toggle Key (Press to Open / Close)" }
+spawner.selected_wheel_mode_idx = 1
 
 -- Follow Tuning Parameters
 local STOP_DIST     = 0.35 -- Arrival tolerance at target waypoint
@@ -823,8 +827,153 @@ local function update_companion_locomotion(delta_time)
 end
 
 -- =========================================================================
--- Day 4: Tactical Command Wheel with Bullet-Time Timescale
+-- Day 4: Multi-Layer Native HID & REFramework Input Engine
 -- =========================================================================
+
+local input = {
+    initialized = false,
+    kb_device = nil,
+    gp_device = nil,
+    kb_keys = {},        -- string name -> int data
+    gp_buttons = {},     -- string name -> int data
+    last_detected_key = "None",
+    last_order_issued = "None",
+    wheel_trigger_down = false,
+    prev_wheel_trigger = false,
+}
+
+local function init_input_engine()
+    if input.initialized then
+        -- Fast re-verify device pointers if nil
+        if not input.kb_device then
+            pcall(function()
+                local kb_singleton = sdk.get_native_singleton("via.hid.Keyboard")
+                local kb_type = sdk.find_type_definition("via.hid.Keyboard")
+                if kb_singleton and kb_type then
+                    input.kb_device = sdk.call_native_func(kb_singleton, kb_type, "get_Device")
+                end
+            end)
+        end
+        if not input.gp_device then
+            pcall(function()
+                local gp_singleton = sdk.get_native_singleton("via.hid.GamePad")
+                local gp_type = sdk.find_type_definition("via.hid.GamePad")
+                if gp_singleton and gp_type then
+                    input.gp_device = sdk.call_native_func(gp_singleton, gp_type, "getMergedDevice", 0)
+                        or sdk.call_native_func(gp_singleton, gp_type, "get_MergedDevice")
+                        or sdk.call_native_func(gp_singleton, gp_type, "get_Device")
+                end
+            end)
+        end
+        return
+    end
+
+    input.initialized = true
+    pcall(function()
+        -- 1. Native Keyboard Singleton & Key Enums
+        local kb_singleton = sdk.get_native_singleton("via.hid.Keyboard")
+        local kb_type = sdk.find_type_definition("via.hid.Keyboard")
+        local kb_key_type = sdk.find_type_definition("via.hid.KeyboardKey")
+
+        if kb_singleton and kb_type then
+            input.kb_device = sdk.call_native_func(kb_singleton, kb_type, "get_Device")
+        end
+
+        if kb_key_type then
+            for _, field in ipairs(kb_key_type:get_fields()) do
+                if field:is_static() then
+                    input.kb_keys[field:get_name()] = field:get_data(nil)
+                end
+            end
+        end
+
+        -- 2. Native Gamepad Singleton & Button Enums
+        local gp_singleton = sdk.get_native_singleton("via.hid.GamePad")
+        local gp_type = sdk.find_type_definition("via.hid.GamePad")
+        local gp_btn_type = sdk.find_type_definition("via.hid.GamePadButton")
+
+        if gp_singleton and gp_type then
+            input.gp_device = sdk.call_native_func(gp_singleton, gp_type, "getMergedDevice", 0)
+                or sdk.call_native_func(gp_singleton, gp_type, "get_MergedDevice")
+                or sdk.call_native_func(gp_singleton, gp_type, "get_Device")
+        end
+
+        if gp_btn_type then
+            for _, field in ipairs(gp_btn_type:get_fields()) do
+                if field:is_static() then
+                    input.gp_buttons[field:get_name()] = field:get_data(nil)
+                end
+            end
+        end
+
+        local kb_cnt = 0; for _ in pairs(input.kb_keys) do kb_cnt = kb_cnt + 1 end
+        local gp_cnt = 0; for _ in pairs(input.gp_buttons) do gp_cnt = gp_cnt + 1 end
+        log_debug(string.format("Input Engine initialized. KB keys cached: %d | GP buttons cached: %d", kb_cnt, gp_cnt))
+    end)
+end
+
+local function is_key_down(key_name, vk_code)
+    -- Layer 1: Native RE Engine via.hid.Keyboard (Hardware poll directly in engine tick)
+    if input.kb_device and key_name and input.kb_keys[key_name] ~= nil then
+        local down = false
+        pcall(function()
+            down = input.kb_device:call("isDown", input.kb_keys[key_name])
+        end)
+        if down then return true end
+    end
+
+    -- Layer 2: REFramework colon method (uses Win32 Virtual Key code)
+    if reframework and reframework.is_key_down and vk_code then
+        local down = false
+        pcall(function()
+            down = reframework:is_key_down(vk_code)
+        end)
+        if down then return true end
+    end
+
+    -- Layer 3: REFramework get_keyboard_state array check
+    if reframework and reframework.get_keyboard_state and vk_code then
+        local down = false
+        pcall(function()
+            local kb_state = reframework:get_keyboard_state() or reframework.get_keyboard_state()
+            if kb_state and kb_state[vk_code] and kb_state[vk_code] ~= 0 then
+                down = true
+            end
+        end)
+        if down then return true end
+    end
+
+    return false
+end
+
+local function is_gamepad_down(btn_name)
+    if input.gp_device and btn_name and input.gp_buttons[btn_name] ~= nil then
+        local down = false
+        pcall(function()
+            down = input.gp_device:call("isDown", input.gp_buttons[btn_name])
+        end)
+        if down then return true end
+    end
+    return false
+end
+
+local function check_wheel_trigger()
+    local name = spawner.key_names_lookup[spawner.selected_key_idx] or "T"
+    local vk = spawner.key_codes[spawner.selected_key_idx] or 0x54
+
+    local kb_down = is_key_down(name, vk)
+    -- Fallback key names for special keys
+    if not kb_down and name == "Capital" then
+        kb_down = is_key_down("CapsLock", vk)
+    end
+
+    -- Check Gamepad triggers (RB / RShoulder / RTrig)
+    local gp_down = is_gamepad_down("RShoulder") 
+        or is_gamepad_down("RB") 
+        or is_gamepad_down("RTrig")
+
+    return kb_down or gp_down
+end
 
 local function open_command_wheel()
     if spawner.command_wheel_open then return end
@@ -847,38 +996,89 @@ local function close_command_wheel()
 end
 
 local function update_command_wheel_input()
-    local is_down = false
-    local key = spawner.key_codes[spawner.selected_key_idx] or 0x54
+    init_input_engine()
 
-    if reframework and reframework.is_key_down then
-        pcall(function() is_down = reframework.is_key_down(key) end)
-    end
+    local is_trigger_down = check_wheel_trigger()
+    input.wheel_trigger_down = is_trigger_down
 
-    if is_down and not spawner.command_wheel_open then
-        open_command_wheel()
-    elseif not is_down and spawner.command_wheel_open then
-        close_command_wheel()
-    end
-
-    -- Numeric order hotkeys while wheel is held open
-    if spawner.command_wheel_open and reframework and reframework.is_key_down then
-        pcall(function()
-            -- '1' (0x31) or Numpad 1 (0x61) -> FOLLOW ME
-            if reframework.is_key_down(0x31) or reframework.is_key_down(0x61) then
-                spawner.fsm_state = "FOLLOW"
-                spawner.follow_enabled = true
-                log_debug("Order selected via hotkey [1]: FOLLOW ME")
-            -- '2' (0x32) or Numpad 2 (0x62) -> HOLD POSITION / STAY
-            elseif reframework.is_key_down(0x32) or reframework.is_key_down(0x62) then
-                spawner.fsm_state = "WAIT"
-                log_debug("Order selected via hotkey [2]: HOLD POSITION (STAY)")
-            -- '3' (0x33) or Numpad 3 (0x63) -> TAKE COVER / DEFEND
-            elseif reframework.is_key_down(0x33) or reframework.is_key_down(0x63) then
-                spawner.fsm_state = "COVER"
-                spawner.follow_enabled = true
-                log_debug("Order selected via hotkey [3]: TAKE COVER")
+    -- Global key detection monitor for live UI feedback
+    pcall(function()
+        if reframework and reframework.get_first_key_down then
+            local k = reframework:get_first_key_down()
+            if k then
+                input.last_detected_key = string.format("0x%02X (%d)", k, k)
             end
-        end)
+        end
+    end)
+
+    if spawner.wheel_mode == "HOLD" then
+        if is_trigger_down and not spawner.command_wheel_open then
+            open_command_wheel()
+        elseif not is_trigger_down and spawner.command_wheel_open then
+            close_command_wheel()
+        end
+    else -- "TOGGLE" mode
+        -- On rising edge (just pressed)
+        if is_trigger_down and not input.prev_wheel_trigger then
+            if spawner.command_wheel_open then
+                close_command_wheel()
+            else
+                open_command_wheel()
+            end
+        end
+    end
+    input.prev_wheel_trigger = is_trigger_down
+
+    -- Check order selection hotkeys while wheel is open
+    if spawner.command_wheel_open then
+        -- 1. FOLLOW ME
+        local press_1 = is_key_down("D1", 0x31) 
+            or is_key_down("Alpha1", 0x31) 
+            or is_key_down("Num1", 0x31) 
+            or is_key_down("One", 0x31)
+            or is_key_down("NumPad1", 0x61) 
+            or is_gamepad_down("LUp") 
+            or is_gamepad_down("Up")
+        if press_1 then
+            spawner.fsm_state = "FOLLOW"
+            spawner.follow_enabled = true
+            input.last_order_issued = "FOLLOW ME [1]"
+            log_debug("Order selected via hotkey: FOLLOW ME")
+            if spawner.wheel_mode == "TOGGLE" then close_command_wheel() end
+        end
+
+        -- 2. HOLD POSITION (STAY)
+        local press_2 = is_key_down("D2", 0x32) 
+            or is_key_down("Alpha2", 0x32) 
+            or is_key_down("Num2", 0x32) 
+            or is_key_down("Two", 0x32)
+            or is_key_down("NumPad2", 0x62) 
+            or is_gamepad_down("LLeft") 
+            or is_gamepad_down("LRight") 
+            or is_gamepad_down("Left")
+            or is_gamepad_down("Right")
+        if press_2 then
+            spawner.fsm_state = "WAIT"
+            input.last_order_issued = "HOLD POSITION [2]"
+            log_debug("Order selected via hotkey: HOLD POSITION (STAY)")
+            if spawner.wheel_mode == "TOGGLE" then close_command_wheel() end
+        end
+
+        -- 3. TAKE COVER
+        local press_3 = is_key_down("D3", 0x33) 
+            or is_key_down("Alpha3", 0x33) 
+            or is_key_down("Num3", 0x33) 
+            or is_key_down("Three", 0x33)
+            or is_key_down("NumPad3", 0x63) 
+            or is_gamepad_down("LDown") 
+            or is_gamepad_down("Down")
+        if press_3 then
+            spawner.fsm_state = "COVER"
+            spawner.follow_enabled = true
+            input.last_order_issued = "TAKE COVER [3]"
+            log_debug("Order selected via hotkey: TAKE COVER")
+            if spawner.wheel_mode == "TOGGLE" then close_command_wheel() end
+        end
     end
 end
 
@@ -923,6 +1123,7 @@ local function draw_command_wheel()
         if imgui.button("Select [1]: Follow Me##btn_follow", btn_w) then
             spawner.fsm_state = "FOLLOW"
             spawner.follow_enabled = true
+            input.last_order_issued = "FOLLOW ME [UI]"
             close_command_wheel()
         end
         imgui.spacing()
@@ -936,6 +1137,7 @@ local function draw_command_wheel()
         end
         if imgui.button("Select [2]: Hold Position##btn_wait", btn_w) then
             spawner.fsm_state = "WAIT"
+            input.last_order_issued = "HOLD POSITION [UI]"
             close_command_wheel()
         end
         imgui.spacing()
@@ -950,11 +1152,15 @@ local function draw_command_wheel()
         if imgui.button("Select [3]: Take Cover##btn_cover", btn_w) then
             spawner.fsm_state = "COVER"
             spawner.follow_enabled = true
+            input.last_order_issued = "TAKE COVER [UI]"
             close_command_wheel()
         end
 
         imgui.separator()
-        imgui.text_colored("Press [1], [2], [3] or click order. Release key to resume.", 0.7, 0.7, 0.7, 1.0)
+        local prompt_str = (spawner.wheel_mode == "HOLD") 
+            and "Press [1], [2], [3] or click order. Release hotkey to resume."
+            or  "Press [1], [2], [3] or click order to confirm (or tap hotkey to close)."
+        imgui.text_colored(prompt_str, 0.7, 0.7, 0.7, 1.0)
         imgui.end_window()
     end
 end
@@ -1203,6 +1409,14 @@ local function draw_spawner_ui(suffix)
         end
 
         imgui.spacing()
+        imgui.text("Command Wheel Trigger Behavior:")
+        local changed_m, new_m = imgui.combo("Trigger Mode##wheel_mode" .. suffix, spawner.selected_wheel_mode_idx, spawner.wheel_modes)
+        if changed_m then
+            spawner.selected_wheel_mode_idx = new_m
+            spawner.wheel_mode = (new_m == 1 and "HOLD") or "TOGGLE"
+            log_debug("Wheel trigger mode changed to: " .. spawner.wheel_mode)
+        end
+
         imgui.text("Command Wheel Hotkey (Bullet-Time 0.4x Slowdown):")
         local changed_k, new_k = imgui.combo("Wheel Hotkey##wheel_key" .. suffix, spawner.selected_key_idx, spawner.key_names)
         if changed_k then
@@ -1210,7 +1424,34 @@ local function draw_spawner_ui(suffix)
             spawner.command_wheel_key = spawner.key_codes[new_k]
             log_debug(string.format("Command wheel hotkey changed to: %s (0x%X)", spawner.key_names[new_k], spawner.command_wheel_key))
         end
-        imgui.text_colored("Hold hotkey in gameplay to slow time to 0.4x & issue orders (or press 1/2/3)!", 0.7, 0.7, 0.7, 1.0)
+
+        -- Live Hardware Input Diagnostics
+        imgui.spacing()
+        imgui.text_colored("--- Live Input & Hardware Diagnostics ---", 0.4, 0.8, 1.0, 1.0)
+        local trig_status = input.wheel_trigger_down and "ACTIVE (HELD)" or "IDLE"
+        if input.wheel_trigger_down then
+            imgui.text_colored("Trigger Status: ACTIVE (HELD)", 0.2, 1.0, 0.4, 1.0)
+        else
+            imgui.text("Trigger Status: IDLE")
+        end
+        imgui.text("Last Key Detected: " .. tostring(input.last_detected_key))
+        imgui.text("Last Order Executed: " .. tostring(input.last_order_issued))
+        if input.kb_device then
+            imgui.text_colored("Native Keyboard Hardware Hook: CONNECTED", 0.2, 1.0, 0.4, 1.0)
+        else
+            imgui.text_colored("Native Keyboard Hardware Hook: Connecting...", 1.0, 0.8, 0.2, 1.0)
+        end
+        if input.gp_device then
+            imgui.text_colored("Native Gamepad Hardware Hook: CONNECTED", 0.2, 1.0, 0.4, 1.0)
+        end
+
+        if imgui.button(spawner.command_wheel_open and "Close Tactical Wheel##test_wheel" .. suffix or "Open Tactical Wheel (Test Slowdown)##test_wheel" .. suffix) then
+            if spawner.command_wheel_open then
+                close_command_wheel()
+            else
+                open_command_wheel()
+            end
+        end
         imgui.separator()
 
         imgui.spacing()
