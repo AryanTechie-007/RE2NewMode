@@ -578,23 +578,12 @@ end
 -- Prevents any script execution during save loads, scene unloads, or title screens
 local last_fail_reason = ""
 function spawner.is_gameplay_ready()
-    -- 1. Native SceneManager check
-    local scene_man = nil
-    pcall(function() scene_man = sdk.get_native_singleton("via.SceneManager") end)
-    if not scene_man then
-        if last_fail_reason ~= "no_scene_man" then
-            last_fail_reason = "no_scene_man"
-            log_debug("is_gameplay_ready fail: no via.SceneManager native singleton")
-        end
-        return false
-    end
-
-    -- 2. Scene Loading Guard: Never run during scene/level streaming!
+    -- 1. Scene Loading Guard: Never run during scene/level streaming!
     local is_loading = false
     pcall(function()
-        if scene_man.call then
+        local scene_man = sdk.get_native_singleton("via.SceneManager")
+        if scene_man and scene_man.call then
             if scene_man:call("get_IsLoading") == true then is_loading = true end
-            if scene_man:call("get_Loading") == true then is_loading = true end
         end
     end)
     if is_loading then
@@ -605,49 +594,7 @@ function spawner.is_gameplay_ready()
         return false
     end
 
-    -- 3. Active Scene Guard & Transition Detection
-    local cur_scene = nil
-    pcall(function() cur_scene = scene_man:call("get_CurrentScene") end)
-    if not cur_scene then
-        if last_fail_reason ~= "no_cur_scene" then
-            last_fail_reason = "no_cur_scene"
-            log_debug("is_gameplay_ready fail: get_CurrentScene returned nil")
-        end
-        return false
-    end
-
-    local cur_scene_addr = nil
-    pcall(function()
-        if cur_scene.get_address then cur_scene_addr = cur_scene:get_address() end
-    end)
-
-    if spawner.active_scene_addr and cur_scene_addr and spawner.active_scene_addr ~= cur_scene_addr then
-        log_debug(string.format("Scene transition detected (0x%X -> 0x%X). Despawning companion.", spawner.active_scene_addr, cur_scene_addr))
-        spawner.execute_despawn()
-    end
-    if cur_scene_addr then
-        spawner.active_scene_addr = cur_scene_addr
-    end
-
-    -- 4. ScenarioManager Transition Guard
-    local scen_man = nil
-    pcall(function() scen_man = sdk.get_managed_singleton("app.ropeway.ScenarioManager") end)
-    if scen_man then
-        local is_trans = false
-        pcall(function()
-            if scen_man:call("get_IsTransition") == true then is_trans = true end
-            if scen_man:call("isTransition") == true then is_trans = true end
-        end)
-        if is_trans then
-            if last_fail_reason ~= "is_trans" then
-                last_fail_reason = "is_trans"
-                log_debug("is_gameplay_ready fail: ScenarioManager reports is_trans == true")
-            end
-            return false
-        end
-    end
-
-    -- 5. Master Player Character & 3D Transform Guard
+    -- 2. Master Player Character & 3D Transform Guard
     local player = spawner.get_master_player()
     if not player then
         if last_fail_reason ~= "no_player" then
