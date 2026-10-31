@@ -913,25 +913,16 @@ local function init_input_engine()
 end
 
 local function is_key_down(key_name, vk_code)
-    -- Layer 1: Native RE Engine via.hid.Keyboard (Hardware poll directly in engine tick)
-    if input.kb_device and key_name and input.kb_keys[key_name] ~= nil then
-        local down = false
-        pcall(function()
-            down = input.kb_device:call("isDown", input.kb_keys[key_name])
-        end)
-        if down then return true end
-    end
-
-    -- Layer 2: REFramework colon method (uses Win32 Virtual Key code)
+    -- Layer 1: REFramework colon / dot method (Win32 Virtual Key code - 100% safe, no C++ device dereference)
     if reframework and reframework.is_key_down and vk_code then
         local down = false
         pcall(function()
-            down = reframework:is_key_down(vk_code)
+            down = reframework:is_key_down(vk_code) or reframework.is_key_down(vk_code)
         end)
         if down then return true end
     end
 
-    -- Layer 3: REFramework get_keyboard_state array check
+    -- Layer 2: REFramework get_keyboard_state array check
     -- Note: In REFramework Lua, get_keyboard_state() returns a 1-indexed table of 256 keys (1 to 256).
     -- Win32 Virtual Key codes are 0-indexed (0 to 255), so the Lua table index is vk_code + 1.
     -- (Checking kb_state[vk_code] without +1 checks the preceding key, e.g. checking 0x54/'T' would test 0x53/'S'!)
@@ -947,11 +938,21 @@ local function is_key_down(key_name, vk_code)
         if down then return true end
     end
 
+    -- Layer 3: Native RE Engine via.hid.Keyboard (Hardware poll directly in engine tick)
+    if input.kb_device and key_name and input.kb_keys[key_name] ~= nil then
+        local down = false
+        pcall(function()
+            down = input.kb_device:call("isDown", input.kb_keys[key_name])
+        end)
+        if down then return true end
+    end
+
     return false
 end
 
 local function is_gamepad_down(btn_name)
-    if input.gp_device and btn_name and input.gp_buttons[btn_name] ~= nil then
+    if not input.gp_device then return false end
+    if btn_name and input.gp_buttons[btn_name] ~= nil then
         local down = false
         pcall(function()
             down = input.gp_device:call("isDown", input.gp_buttons[btn_name])
@@ -1177,6 +1178,10 @@ re.on_frame(function()
     local dt = spawner.last_time and (now - spawner.last_time) or 0.0166
     spawner.last_time = now
     if dt <= 0.0 or dt > 0.1 then dt = 0.0166 end
+
+    -- Guard: Only run frame logic if player is actually loaded into a playable scene
+    local player = spawner.get_master_player()
+    if not player then return end
 
     -- Day 4: Tactical Command Wheel Input
     pcall(update_command_wheel_input)
