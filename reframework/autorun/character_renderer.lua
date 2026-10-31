@@ -626,7 +626,11 @@ function spawner.is_gameplay_ready()
         return false
     end
 
-    local pos = spawner.get_player_position(player)
+    local pos = nil
+    pcall(function() pos = player_tf:call("get_Position") end)
+    if not pos then
+        pos = spawner.get_player_position(player)
+    end
     if not pos or not pos.x or not pos.y or not pos.z then
         if last_fail_reason ~= "no_pos" then
             last_fail_reason = "no_pos"
@@ -695,9 +699,9 @@ function spawner.execute_despawn()
         end
     end)
     pcall(function()
-        if spawner.body_pfb and spawner.body_pfb.call then spawner.body_pfb:call("release") end
-        if spawner.head_pfb and spawner.head_pfb.call then spawner.head_pfb:call("release") end
-        if spawner.hair_pfb and spawner.hair_pfb.call then spawner.hair_pfb:call("release") end
+        if spawner.body_pfb and spawner.body_pfb.release then spawner.body_pfb:release() end
+        if spawner.head_pfb and spawner.head_pfb.release then spawner.head_pfb:release() end
+        if spawner.hair_pfb and spawner.hair_pfb.release then spawner.hair_pfb:release() end
     end)
     spawner.spawned_entities = {}
     spawner.spawned_body = nil
@@ -1602,9 +1606,9 @@ re.on_frame(function()
             log_debug(string.format("Spawn completed! Total parts active: %d", #spawner.spawned_entities))
             spawner.streaming = false
             pcall(function()
-                if spawner.body_pfb and spawner.body_pfb.call then spawner.body_pfb:call("release") end
-                if spawner.head_pfb and spawner.head_pfb.call then spawner.head_pfb:call("release") end
-                if spawner.hair_pfb and spawner.hair_pfb.call then spawner.hair_pfb:call("release") end
+                if spawner.body_pfb and spawner.body_pfb.release then spawner.body_pfb:release() end
+                if spawner.head_pfb and spawner.head_pfb.release then spawner.head_pfb:release() end
+                if spawner.hair_pfb and spawner.hair_pfb.release then spawner.hair_pfb:release() end
             end)
             spawner.body_pfb = nil
             spawner.head_pfb = nil
@@ -1614,9 +1618,9 @@ re.on_frame(function()
             if spawner.stream_frames > 300 then
                 spawner.streaming = false
                 pcall(function()
-                    if spawner.body_pfb and spawner.body_pfb.call then spawner.body_pfb:call("release") end
-                    if spawner.head_pfb and spawner.head_pfb.call then spawner.head_pfb:call("release") end
-                    if spawner.hair_pfb and spawner.hair_pfb.call then spawner.hair_pfb:call("release") end
+                    if spawner.body_pfb and spawner.body_pfb.release then spawner.body_pfb:release() end
+                    if spawner.head_pfb and spawner.head_pfb.release then spawner.head_pfb:release() end
+                    if spawner.hair_pfb and spawner.hair_pfb.release then spawner.hair_pfb:release() end
                 end)
                 spawner.body_pfb = nil
                 spawner.head_pfb = nil
