@@ -76,3 +76,17 @@ The following technical items have been deferred during Phase 1 to prioritize co
     3. REFramework colon syntax fallback (`reframework:is_key_down(0x54)`) and `reframework:get_keyboard_state()`.
     4. Added **Toggle Mode** (`spawner.wheel_mode = "TOGGLE"`) alongside **Hold Mode** so players can simply tap `T` to open/close bullet-time comfortably.
     5. Added live visual input diagnostics to the ImGui dashboard showing real-time trigger status, last key detected, and hook connectivity.
+
+---
+
+### 6. Tactical "Take Cover" Mechanism Deep-Dive & Refinement
+* **Current Status:**
+  - Selecting **Take Cover (`3`)** sets `spawner.fsm_state = "COVER"`.
+  - In `character_renderer.lua`, `COVER` tightens the companion tether to a compact 0.95m formation with rear-guard outward orientation.
+* **Why Deferred:**
+  - True tactical cover in *Resident Evil 2* (wall-hugging, crouching behind desks/barricades, or line-of-sight occlusion relative to active enemies) requires deeper environmental geometry raycasting and posture animation integration.
+  - Deferred to keep momentum moving into Phase 2 core gameplay mechanics (Door hooks, Dual Inventory, and Combat AI).
+* **Revisit Action Plan:**
+  - **Threat Direction Awareness:** Raycast from nearby active enemies (`em0000` zombie, `em0020` Licker, `em0050` Tyrant) to calculate the threat vector; position Claire behind Leon or obstacle collision relative to the incoming threat angle.
+  - **Defensive Stance:** Identify and trigger low-profile crouch or defensive stance animations (`via.motion.Motion` / `MotionFsm2`) when entering `COVER`.
+  - **Dynamic Cover Points:** Investigate using RE Engine's native obstacle bounds or RPD room navigation meshes to anchor Claire to low walls and door frames during firefights.
