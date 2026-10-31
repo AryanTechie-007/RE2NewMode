@@ -576,11 +576,18 @@ end
 
 -- Comprehensive lifecycle & level streaming guard:
 -- Prevents any script execution during save loads, scene unloads, or title screens
+local last_fail_reason = ""
 function spawner.is_gameplay_ready()
     -- 1. Native SceneManager check
     local scene_man = nil
     pcall(function() scene_man = sdk.get_native_singleton("via.SceneManager") end)
-    if not scene_man then return false end
+    if not scene_man then
+        if last_fail_reason ~= "no_scene_man" then
+            last_fail_reason = "no_scene_man"
+            log_debug("is_gameplay_ready fail: no via.SceneManager native singleton")
+        end
+        return false
+    end
 
     -- 2. Scene Loading Guard: Never run during scene/level streaming!
     local is_loading = false
@@ -590,18 +597,37 @@ function spawner.is_gameplay_ready()
             if scene_man:call("get_Loading") == true then is_loading = true end
         end
     end)
-    if is_loading then return false end
+    if is_loading then
+        if last_fail_reason ~= "is_loading" then
+            last_fail_reason = "is_loading"
+            log_debug("is_gameplay_ready fail: SceneManager reports is_loading == true")
+        end
+        return false
+    end
 
     -- 3. Active Scene Guard & Transition Detection
     local cur_scene = nil
     pcall(function() cur_scene = scene_man:call("get_CurrentScene") end)
-    if not cur_scene then return false end
+    if not cur_scene then
+        if last_fail_reason ~= "no_cur_scene" then
+            last_fail_reason = "no_cur_scene"
+            log_debug("is_gameplay_ready fail: get_CurrentScene returned nil")
+        end
+        return false
+    end
 
-    if spawner.active_scene and spawner.active_scene ~= cur_scene then
-        -- Scene transitioned! Despawn old entities immediately to prevent dangling pointer crashes
+    local cur_scene_addr = nil
+    pcall(function()
+        if cur_scene.get_address then cur_scene_addr = cur_scene:get_address() end
+    end)
+
+    if spawner.active_scene_addr and cur_scene_addr and spawner.active_scene_addr ~= cur_scene_addr then
+        log_debug(string.format("Scene transition detected (0x%X -> 0x%X). Despawning companion.", spawner.active_scene_addr, cur_scene_addr))
         spawner.execute_despawn()
     end
-    spawner.active_scene = cur_scene
+    if cur_scene_addr then
+        spawner.active_scene_addr = cur_scene_addr
+    end
 
     -- 4. ScenarioManager Transition Guard
     local scen_man = nil
@@ -609,28 +635,79 @@ function spawner.is_gameplay_ready()
     if scen_man then
         local is_trans = false
         pcall(function()
-            is_trans = scen_man:call("get_IsTransition") or scen_man:call("isTransition") or false
+            if scen_man:call("get_IsTransition") == true then is_trans = true end
+            if scen_man:call("isTransition") == true then is_trans = true end
         end)
-        if is_trans then return false end
+        if is_trans then
+            if last_fail_reason ~= "is_trans" then
+                last_fail_reason = "is_trans"
+                log_debug("is_gameplay_ready fail: ScenarioManager reports is_trans == true")
+            end
+            return false
+        end
     end
 
     -- 5. Master Player Character & 3D Transform Guard
     local player = spawner.get_master_player()
-    if not player then return false end
+    if not player then
+        if last_fail_reason ~= "no_player" then
+            last_fail_reason = "no_player"
+            log_debug("is_gameplay_ready fail: get_master_player() returned nil")
+        end
+        return false
+    end
 
     local player_go = spawner.get_player_game_object(player)
-    if not player_go then return false end
+    if not player_go then
+        if last_fail_reason ~= "no_player_go" then
+            last_fail_reason = "no_player_go"
+            log_debug("is_gameplay_ready fail: get_player_game_object() returned nil")
+        end
+        return false
+    end
 
     local player_tf = nil
     pcall(function() player_tf = player_go:call("get_Transform") end)
-    if not player_tf then return false end
+    if not player_tf then
+        pcall(function() player_tf = player:call("get_Transform") end)
+    end
+    if not player_tf then
+        if last_fail_reason ~= "no_player_tf" then
+            last_fail_reason = "no_player_tf"
+            log_debug("is_gameplay_ready fail: player transform returned nil")
+        end
+        return false
+    end
 
     local pos = spawner.get_player_position(player)
-    if not pos or not pos.x or not pos.y or not pos.z then return false end
+    if not pos or not pos.x or not pos.y or not pos.z then
+        if last_fail_reason ~= "no_pos" then
+            last_fail_reason = "no_pos"
+            log_debug("is_gameplay_ready fail: player position is nil or missing coordinates")
+        end
+        return false
+    end
 
     -- Guard against NaN or uninitialized (0, 0, 0)
-    if pos.x ~= pos.x or pos.y ~= pos.y or pos.z ~= pos.z then return false end
-    if pos.x == 0.0 and pos.y == 0.0 and pos.z == 0.0 then return false end
+    if pos.x ~= pos.x or pos.y ~= pos.y or pos.z ~= pos.z then
+        if last_fail_reason ~= "nan_pos" then
+            last_fail_reason = "nan_pos"
+            log_debug("is_gameplay_ready fail: player position is NaN")
+        end
+        return false
+    end
+    if pos.x == 0.0 and pos.y == 0.0 and pos.z == 0.0 then
+        if last_fail_reason ~= "zero_pos" then
+            last_fail_reason = "zero_pos"
+            log_debug("is_gameplay_ready fail: player position is exactly (0,0,0)")
+        end
+        return false
+    end
+
+    if last_fail_reason ~= "READY" then
+        last_fail_reason = "READY"
+        log_debug(string.format("is_gameplay_ready SUCCESS! Player at (%.2f, %.2f, %.2f)", pos.x, pos.y, pos.z))
+    end
 
     return true, player, player_go, player_tf, pos
 end
@@ -669,6 +746,11 @@ function spawner.execute_despawn()
                 end
             end)
         end
+    end)
+    pcall(function()
+        if spawner.body_pfb and spawner.body_pfb.call then spawner.body_pfb:call("release") end
+        if spawner.head_pfb and spawner.head_pfb.call then spawner.head_pfb:call("release") end
+        if spawner.hair_pfb and spawner.hair_pfb.call then spawner.hair_pfb:call("release") end
     end)
     spawner.spawned_entities = {}
     spawner.spawned_body = nil
@@ -722,7 +804,7 @@ function spawner.start_spawn(mode)
 
     -- Create Body Prefab
     pcall(function()
-        local b = sdk.create_instance("via.Prefab")
+        local b = sdk.create_instance("via.Prefab"):add_ref()
         b:call("set_Path", body_path)
         b:call("set_Standby", true)
         spawner.body_pfb = b
@@ -731,7 +813,7 @@ function spawner.start_spawn(mode)
     -- Create Head and Hair Prefabs if full mode
     if spawner.mode == "full" and head_path then
         pcall(function()
-            local h = sdk.create_instance("via.Prefab")
+            local h = sdk.create_instance("via.Prefab"):add_ref()
             h:call("set_Path", head_path)
             h:call("set_Standby", true)
             spawner.head_pfb = h
@@ -739,7 +821,7 @@ function spawner.start_spawn(mode)
     end
     if spawner.mode == "full" and hair_path then
         pcall(function()
-            local hr = sdk.create_instance("via.Prefab")
+            local hr = sdk.create_instance("via.Prefab"):add_ref()
             hr:call("set_Path", hair_path)
             hr:call("set_Standby", true)
             spawner.hair_pfb = hr
@@ -1572,6 +1654,11 @@ re.on_frame(function()
             spawner.last_status = "SUCCESS: CLAIRE FULLY RENDERED (Body + Head + Hair)!"
             log_debug(string.format("Spawn completed! Total parts active: %d", #spawner.spawned_entities))
             spawner.streaming = false
+            pcall(function()
+                if spawner.body_pfb and spawner.body_pfb.call then spawner.body_pfb:call("release") end
+                if spawner.head_pfb and spawner.head_pfb.call then spawner.head_pfb:call("release") end
+                if spawner.hair_pfb and spawner.hair_pfb.call then spawner.hair_pfb:call("release") end
+            end)
             spawner.body_pfb = nil
             spawner.head_pfb = nil
             spawner.hair_pfb = nil
@@ -1579,6 +1666,11 @@ re.on_frame(function()
             spawner.last_status = string.format("Streaming assets... (Frame %d/300, active parts %d/3)", spawner.stream_frames, #spawner.spawned_entities)
             if spawner.stream_frames > 300 then
                 spawner.streaming = false
+                pcall(function()
+                    if spawner.body_pfb and spawner.body_pfb.call then spawner.body_pfb:call("release") end
+                    if spawner.head_pfb and spawner.head_pfb.call then spawner.head_pfb:call("release") end
+                    if spawner.hair_pfb and spawner.hair_pfb.call then spawner.hair_pfb:call("release") end
+                end)
                 spawner.body_pfb = nil
                 spawner.head_pfb = nil
                 spawner.hair_pfb = nil
