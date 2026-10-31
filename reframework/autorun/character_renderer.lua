@@ -790,9 +790,12 @@ end
 
 spawner.motion = {
     initialized = false,
-    auto_sync = false,
+    auto_sync = true,
+    reflection_dumped = false,
     selected_bank_id = 1,
     selected_motion_id = 160,
+    active_played_bid = 0,
+    active_played_mid = 0,
     leon_bank_id = 0,
     leon_motion_id = 0,
     leon_frame = 0.0,
@@ -809,55 +812,162 @@ spawner.motion = {
     last_status = "Standing by (Click Link or Play to test)",
 }
 
+local function format_re_method(m)
+    if not m then return "<nil method>" end
+    local mname = m:get_name() or "<unnamed>"
+    local ok, res = pcall(function()
+        local p_names = m:get_param_names() or {}
+        local p_types = m:get_param_types() or {}
+        local p_strs = {}
+        for i = 1, #p_names do
+            local pname = p_names[i] or ("arg" .. i)
+            local ptype = p_types[i] and (p_types[i]:get_full_name() or p_types[i]:get_name()) or "unknown"
+            table.insert(p_strs, ptype .. " " .. pname)
+        end
+        local ret_td = m:get_return_type()
+        local ret_name = ret_td and (ret_td:get_full_name() or ret_td:get_name()) or "void"
+        return string.format("%s %s(%s)", ret_name, mname, table.concat(p_strs, ", "))
+    end)
+    if ok then return res else return mname .. "(format error)" end
+end
+
 function spawner.inspect_motion_reflection()
     log_debug("=================== MOTION REFLECTION DUMP ===================")
     pcall(function()
+        -- 1. TreeLayer Methods
         local td_layer = sdk.find_type_definition("via.motion.TreeLayer")
         if td_layer then
-            log_debug("--- via.motion.TreeLayer: changeMotion Overloads ---")
+            log_debug("--- via.motion.TreeLayer: Locomotion & Playback Methods ---")
             for _, m in ipairs(td_layer:get_methods()) do
-                if m:get_name() == "changeMotion" then
-                    local p_strs = {}
-                    for _, p in ipairs(m:get_params()) do
-                        local tname = p:get_type() and p:get_type():get_name() or "unknown"
-                        table.insert(p_strs, p:get_name() .. ": " .. tname)
-                    end
-                    log_debug(string.format("  TreeLayer:changeMotion(%s)", table.concat(p_strs, ", ")))
+                local mname = string.lower(m:get_name())
+                if string.find(mname, "motion") or string.find(mname, "play") or string.find(mname, "speed") or string.find(mname, "frame") or string.find(mname, "reset") then
+                    log_debug("  " .. format_re_method(m))
                 end
             end
         end
 
+        -- 2. Motion Component Methods
         local td_mot = sdk.find_type_definition("via.motion.Motion")
         if td_mot then
             log_debug("--- via.motion.Motion: Play & Bank Methods ---")
             for _, m in ipairs(td_mot:get_methods()) do
-                local mname = m:get_name()
-                if string.find(string.lower(mname), "motion") or string.find(string.lower(mname), "play") or string.find(string.lower(mname), "bank") then
-                    local p_strs = {}
-                    for _, p in ipairs(m:get_params()) do
-                        local tname = p:get_type() and p:get_type():get_name() or "unknown"
-                        table.insert(p_strs, p:get_name() .. ": " .. tname)
-                    end
-                    log_debug(string.format("  Motion:%s(%s)", mname, table.concat(p_strs, ", ")))
+                local mname = string.lower(m:get_name())
+                if string.find(mname, "motion") or string.find(mname, "play") or string.find(mname, "bank") or string.find(mname, "layer") or string.find(mname, "speed") then
+                    log_debug("  " .. format_re_method(m))
                 end
             end
         end
 
+        -- 3. Leon Hierarchy & Motion Inspection
         local player = spawner.get_master_player()
         local player_go = spawner.get_player_game_object(player)
         if player_go then
+            log_debug("--- Leon (Player GameObject) Inspection ---")
+            local p_scene = nil
+            pcall(function() p_scene = player_go:call("get_Scene") end)
+            log_debug("  Leon Scene: " .. tostring(p_scene))
+
+            -- Check Leon components
+            local known_types = {
+                "via.Transform",
+                "via.render.Mesh",
+                "via.motion.Motion",
+                "via.motion.MotionFsm2",
+                "via.motion.MotionJack",
+                "via.physics.CharacterController",
+                "via.physics.DynamicMotionJack",
+                "via.physics.RagdollCharacterController",
+                "app.ropeway.survivor.SurvivorMotionController",
+                "app.ropeway.PlayerMotionController",
+                "app.ropeway.PlayerInputReceiver",
+                "app.ropeway.PadManager",
+                "app.ropeway.survivor.SurvivorActionController",
+                "app.ropeway.survivor.SurvivorHeadLookController",
+            }
+            local found_leon = {}
+            for _, kn in ipairs(known_types) do
+                local t = sdk.typeof(kn)
+                if t and player_go:call("getComponent(System.Type)", t) then
+                    table.insert(found_leon, kn)
+                end
+            end
+            log_debug("  Leon Components Found: " .. table.concat(found_leon, ", "))
+
             local p_motion = player_go:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
             if p_motion then
                 local p_asset = p_motion:call("get_MotionBankAsset")
-                log_debug("  Leon MotionBankAsset: " .. tostring(p_asset))
-                local p_l0 = p_motion:call("getLayer", 0)
-                if p_l0 then
-                    local p_mid = p_l0:call("get_MotionID")
-                    local p_bid = p_l0:call("get_MotionBankID") or p_l0:call("get_BankID")
-                    log_debug(string.format("  Leon Layer 0: BankID=%s, MotionID=%s, Frame=%.2f, Speed=%.2f",
-                        tostring(p_bid), tostring(p_mid), p_l0:call("get_Frame") or 0, p_l0:call("get_Speed") or 0))
+                local p_play = p_motion:call("get_Play")
+                local p_spd = p_motion:call("get_PlaySpeed")
+                local l_cnt = p_motion:call("getLayerCount") or 1
+                log_debug(string.format("  Leon Motion: Play=%s, PlaySpeed=%s, LayerCount=%s, BankAsset=%s",
+                    tostring(p_play), tostring(p_spd), tostring(l_cnt), tostring(p_asset)))
+                
+                for li = 0, math.min(l_cnt - 1, 3) do
+                    local layer = p_motion:call("getLayer", li)
+                    if layer then
+                        local l_mid = layer:call("get_MotionID")
+                        local l_bid = layer:call("get_MotionBankID") or layer:call("get_BankID")
+                        local l_frm = layer:call("get_Frame")
+                        local l_end = layer:call("get_EndFrame")
+                        local l_ply = layer:call("get_Play")
+                        local l_sp = layer:call("get_Speed")
+                        log_debug(string.format("    Leon Layer[%d]: Play=%s, Spd=%.2f, BankID=%s, MotionID=%s, Frame=%.1f/%.1f",
+                            li, tostring(l_ply), l_sp or 0, tostring(l_bid), tostring(l_mid), l_frm or 0, l_end or 0))
+                    end
                 end
             end
+        end
+
+        -- 4. Claire Hierarchy & Motion Inspection
+        local body_obj = spawner.spawned_entities and spawner.spawned_entities[1]
+        if body_obj then
+            log_debug("--- Claire (Spawned Body GameObject) Inspection ---")
+            local found_claire = {}
+            local known_types = {
+                "via.Transform",
+                "via.render.Mesh",
+                "via.motion.Motion",
+                "via.motion.MotionFsm2",
+                "via.motion.MotionJack",
+                "via.physics.CharacterController",
+                "via.physics.DynamicMotionJack",
+                "via.physics.RagdollCharacterController",
+                "app.ropeway.survivor.SurvivorMotionController",
+                "app.ropeway.PlayerMotionController",
+            }
+            for _, kn in ipairs(known_types) do
+                local t = sdk.typeof(kn)
+                if t and body_obj:call("getComponent(System.Type)", t) then
+                    table.insert(found_claire, kn)
+                end
+            end
+            log_debug("  Claire Components Found: " .. table.concat(found_claire, ", "))
+
+            local c_mot = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+            if c_mot then
+                local c_asset = c_mot:call("get_MotionBankAsset")
+                local c_play = c_mot:call("get_Play")
+                local c_spd = c_mot:call("get_PlaySpeed")
+                local c_cnt = c_mot:call("getLayerCount") or 1
+                log_debug(string.format("  Claire Motion: Play=%s, PlaySpeed=%s, LayerCount=%s, BankAsset=%s",
+                    tostring(c_play), tostring(c_spd), tostring(c_cnt), tostring(c_asset)))
+                
+                local l0 = c_mot:call("getLayer", 0)
+                if l0 then
+                    local l_mid = l0:call("get_MotionID")
+                    local l_bid = l0:call("get_MotionBankID") or l0:call("get_BankID")
+                    local l_frm = l0:call("get_Frame")
+                    local l_end = l0:call("get_EndFrame")
+                    local l_ply = l0:call("get_Play")
+                    local l_sp = l0:call("get_Speed")
+                    log_debug(string.format("    Claire Layer[0]: Play=%s, Spd=%.2f, BankID=%s, MotionID=%s, Frame=%.1f/%.1f",
+                        tostring(l_ply), l_sp or 0, tostring(l_bid), tostring(l_mid), l_frm or 0, l_end or 0))
+                end
+            else
+                log_debug("  Claire has NO via.motion.Motion component!")
+            end
+        else
+            log_debug("--- Claire Body GameObject: Not currently spawned ---")
         end
     end)
     log_debug("==============================================================")
@@ -889,8 +999,19 @@ function spawner.link_motion_bank(body_obj)
 
         c_mot:call("set_MotionBankAsset", p_asset)
         c_mot:call("setupMotionBank")
+        c_mot:call("set_Play", true)
+        c_mot:call("set_PlaySpeed", 1.0)
+        pcall(function() c_mot:call("set_Pause", false) end)
+
+        local l0 = c_mot:call("getLayer", 0)
+        if l0 then
+            l0:call("set_Play", true)
+            l0:call("set_Speed", 1.0)
+            pcall(function() l0:call("set_Pause", false) end)
+        end
+
         spawner.motion.claire_has_bank = true
-        spawner.motion.last_status = "Assigned Leon's MotionBankAsset to Claire!"
+        spawner.motion.last_status = "Assigned Leon's MotionBankAsset to Claire & enabled playback!"
         log_debug(spawner.motion.last_status)
         success = true
     end)
@@ -899,32 +1020,128 @@ end
 
 function spawner.play_claire_motion(body_obj, bank_id, motion_id)
     if not body_obj then return false end
-    bank_id = bank_id or 1
-    motion_id = motion_id or 160
+    bank_id = bank_id or spawner.motion.leon_bank_id or 1
+    motion_id = motion_id or spawner.motion.leon_motion_id or 160
 
     local ok = false
     pcall(function()
         local c_mot = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
-        if not c_mot then return end
+        if not c_mot then 
+            log_debug("play_claire_motion failed: Claire body has no via.motion.Motion")
+            return 
+        end
+
+        -- Ensure motion component is enabled and playing
+        c_mot:call("set_Play", true)
+        c_mot:call("set_PlaySpeed", 1.0)
+        pcall(function() c_mot:call("set_Pause", false) end)
 
         local l0 = c_mot:call("getLayer", 0)
-        if not l0 then return end
+        if not l0 then 
+            log_debug("play_claire_motion failed: Claire Motion has no Layer 0")
+            return 
+        end
 
-        -- Set Bank and Motion ID
-        l0:call("set_MotionBankID", bank_id)
-        l0:call("set_MotionID", motion_id)
+        l0:call("set_Play", true)
         l0:call("set_Speed", 1.0)
-        l0:call("set_PlayReset", true)
-        l0:call("resetFrame")
+        pcall(function() l0:call("set_Pause", false) end)
 
-        -- Attempt changeMotion safely
-        pcall(function() l0:call("changeMotion", motion_id) end)
+        -- Change motion using all valid signatures
+        local method_used = "none"
+        local ok_m = pcall(function()
+            l0:call("changeMotion(System.UInt32, System.UInt32)", bank_id, motion_id)
+        end)
+        if ok_m then
+            method_used = "changeMotion(u32, u32)"
+        else
+            local ok_m2 = pcall(function()
+                l0:call("changeMotion(System.UInt32, System.UInt32, System.Single)", bank_id, motion_id, 0.0)
+            end)
+            if ok_m2 then
+                method_used = "changeMotion(u32, u32, single)"
+            else
+                local ok_m3 = pcall(function()
+                    l0:call("changeMotion", bank_id, motion_id)
+                end)
+                if ok_m3 then
+                    method_used = "changeMotion(generic)"
+                else
+                    pcall(function() l0:call("set_MotionBankID", bank_id) end)
+                    pcall(function() l0:call("set_MotionID", motion_id) end)
+                    pcall(function() l0:call("resetFrame") end)
+                    method_used = "set_MotionID/BankID"
+                end
+            end
+        end
 
-        spawner.motion.last_status = string.format("Playing BankID=%d, MotionID=%d", bank_id, motion_id)
+        pcall(function()
+            c_mot:call("changeMotion(System.UInt32, System.UInt32)", bank_id, motion_id)
+        end)
+
+        spawner.motion.active_played_mid = motion_id
+        spawner.motion.active_played_bid = bank_id
+        spawner.motion.last_status = string.format("Playing BankID=%d, MotionID=%d (%s)", bank_id, motion_id, method_used)
         log_debug(spawner.motion.last_status)
         ok = true
     end)
     return ok
+end
+
+-- Pathway B: Fallback Duplication Spawner
+function spawner.spawn_by_duplication()
+    local player = spawner.get_master_player()
+    local player_go = spawner.get_player_game_object(player)
+    if not player_go then
+        log_debug("Pathway B failed: Player GameObject not found")
+        return nil
+    end
+
+    local player_tf = player_go:call("get_Transform")
+    local leon_pos = player_tf and player_tf:call("get_Position")
+    if not leon_pos then return nil end
+
+    local p_scene = nil
+    pcall(function() p_scene = player_go:call("get_Scene") end)
+    if not p_scene then
+        log_debug("Pathway B failed: Could not get scene from player_go")
+        return nil
+    end
+
+    log_debug("Attempting Pathway B: duplicateGameObject via player scene...")
+    local clone = nil
+    pcall(function()
+        clone = p_scene:call("duplicateGameObject(via.GameObject)", player_go)
+    end)
+    if not clone then
+        pcall(function()
+            clone = p_scene:call("duplicateGameObject", player_go)
+        end)
+    end
+
+    if not clone then
+        log_debug("duplicateGameObject returned nil.")
+        return nil
+    end
+
+    -- Position clone near Leon
+    pcall(function()
+        local c_tf = clone:call("get_Transform")
+        if c_tf then
+            local fp = get_front_spawn_position(player_tf, 2.0)
+            c_tf:call("set_Position", fp)
+        end
+    end)
+
+    -- Strip player input receiver so user controls don't move the clone
+    pcall(function()
+        local in_rec = clone:call("getComponent(System.Type)", sdk.typeof("app.ropeway.PlayerInputReceiver"))
+        if in_rec then in_rec:call("set_Valid", false) end
+        local pad = clone:call("getComponent(System.Type)", sdk.typeof("app.ropeway.PadManager"))
+        if pad then pad:call("set_Valid", false) end
+    end)
+
+    log_debug("Pathway B: Duplicated player actor successfully spawned!")
+    return clone
 end
 
 local function update_motion_telemetry()
@@ -936,10 +1153,17 @@ local function update_motion_telemetry()
             if p_mot then
                 local l0 = p_mot:call("getLayer", 0)
                 if l0 then
-                    spawner.motion.leon_motion_id = l0:call("get_MotionID") or 0
-                    spawner.motion.leon_bank_id = l0:call("get_MotionBankID") or l0:call("get_BankID") or 0
-                    spawner.motion.leon_frame = l0:call("get_Frame") or 0.0
-                    spawner.motion.leon_speed = l0:call("get_Speed") or 0.0
+                    local mid = l0:call("get_MotionID") or 0
+                    local bid = l0:call("get_MotionBankID") or l0:call("get_BankID") or 0
+                    local frm = l0:call("get_Frame") or 0.0
+                    local spd = l0:call("get_Speed") or 0.0
+                    if mid ~= spawner.motion.leon_motion_id or bid ~= spawner.motion.leon_bank_id then
+                        log_debug(string.format("Leon Motion Changed: BankID=%d, MotionID=%d (Frame=%.1f, Speed=%.2f)", bid, mid, frm, spd))
+                    end
+                    spawner.motion.leon_motion_id = mid
+                    spawner.motion.leon_bank_id = bid
+                    spawner.motion.leon_frame = frm
+                    spawner.motion.leon_speed = spd
                 end
             end
         end)
@@ -1145,19 +1369,35 @@ local function update_companion_locomotion(delta_time)
             target_anim_state = "RUN"
         end
 
+        local should_change = false
         if target_anim_state ~= spawner.motion.current_state then
             spawner.motion.current_state = target_anim_state
+            should_change = true
+        elseif target_anim_state ~= "IDLE" and spawner.motion.leon_motion_id and spawner.motion.leon_motion_id > 0 and spawner.motion.active_played_mid ~= spawner.motion.leon_motion_id then
+            should_change = true
+        end
+
+        if should_change then
+            local active_bid = spawner.motion.leon_bank_id or 1
             local active_mid = (target_anim_state == "IDLE") and spawner.motion.idle_mid
                 or (target_anim_state == "RUN") and (spawner.motion.run_mid or spawner.motion.leon_motion_id)
                 or (spawner.motion.walk_mid or spawner.motion.leon_motion_id)
-            spawner.play_claire_motion(body_obj, spawner.motion.leon_bank_id or 1, active_mid)
+
+            -- When moving, mirror Leon's active motion ID directly if valid
+            if target_anim_state ~= "IDLE" and spawner.motion.leon_motion_id and spawner.motion.leon_motion_id > 0 then
+                active_mid = spawner.motion.leon_motion_id
+                active_bid = spawner.motion.leon_bank_id or 1
+            end
+
+            spawner.play_claire_motion(body_obj, active_bid, active_mid)
         end
 
-        -- Scale stride speed proportionally to movement speed
+        -- Ensure Claire's motion layer speed matches locomotion speed & maintains playback
         pcall(function()
             local c_mot = body_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
             local l0 = c_mot and c_mot:call("getLayer", 0)
             if l0 then
+                l0:call("set_Play", true)
                 local spd = (spawner.current_speed < 0.1) and 1.0 or (spawner.current_speed / WALK_SPEED)
                 l0:call("set_Speed", math.max(0.5, math.min(2.0, spd)))
             end
@@ -1558,7 +1798,10 @@ re.on_frame(function()
                 end
 
                 -- Auto-link Leon's motion bank to Claire Body (Pathway A)
-                pcall(function() spawner.link_motion_bank(body_obj) end)
+                pcall(function()
+                    spawner.link_motion_bank(body_obj)
+                    spawner.play_claire_motion(body_obj, spawner.motion.leon_bank_id or 1, spawner.motion.idle_mid or 160)
+                end)
             end
         end
 
@@ -1636,6 +1879,12 @@ re.on_frame(function()
 
     -- Pathway A: Real-Time Motion Telemetry
     pcall(update_motion_telemetry)
+
+    -- Automatic reflection dump once gameplay is ready
+    if not spawner.motion.reflection_dumped and is_gameplay_ready() then
+        spawner.motion.reflection_dumped = true
+        pcall(spawner.inspect_motion_reflection)
+    end
 
     -- C. Active Locomotion (Only runs when Claire is spawned)
     if #spawner.spawned_entities > 0 then
@@ -1833,6 +2082,23 @@ local function draw_spawner_ui(suffix)
             local b_obj = spawner.spawned_entities and spawner.spawned_entities[1]
             spawner.link_motion_bank(b_obj)
         end
+        imgui.same_line()
+        if imgui.button("Force Play (L0)##m_fplay" .. suffix) then
+            local b_obj = spawner.spawned_entities and spawner.spawned_entities[1]
+            if b_obj then
+                local c_mot = b_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+                if c_mot then
+                    c_mot:call("set_Play", true)
+                    c_mot:call("set_PlaySpeed", 1.0)
+                    local l0 = c_mot:call("getLayer", 0)
+                    if l0 then
+                        l0:call("set_Play", true)
+                        l0:call("set_Speed", 1.0)
+                        log_debug("UI: Forced Play=true on Claire Motion and Layer 0")
+                    end
+                end
+            end
+        end
 
         local auto_label = spawner.motion.auto_sync and "Auto-Sync Walking/Idle Leg Cycles: [ON] (Click to Disable)" or "Auto-Sync Walking/Idle Leg Cycles: [OFF] (Click to Enable)"
         if spawner.motion.auto_sync then imgui.push_style_color(21, 0.2, 0.7, 0.3, 1.0) end
@@ -1861,6 +2127,13 @@ local function draw_spawner_ui(suffix)
         if imgui.button("Mirror Leon's Active Motion##m_mirr" .. suffix) then
             local b_obj = spawner.spawned_entities and spawner.spawned_entities[1]
             spawner.play_claire_motion(b_obj, spawner.motion.leon_bank_id, spawner.motion.leon_motion_id)
+        end
+
+        imgui.spacing()
+        imgui.text_colored("--- Pathway B Fallback: Character Duplication ---", 1.0, 0.6, 0.2, 1.0)
+        if imgui.button("Spawn Companion via Duplication (Pathway B)##btn_pathway_b" .. suffix) then
+            log_debug("UI BUTTON: Spawn Companion via Duplication (Pathway B)")
+            spawner.spawn_by_duplication()
         end
 
         imgui.separator()
