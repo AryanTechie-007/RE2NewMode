@@ -663,6 +663,10 @@ function spawner.is_gameplay_ready()
     return true, player, player_go, player_tf, pos
 end
 
+local function is_gameplay_ready(...)
+    return spawner.is_gameplay_ready(...)
+end
+
 -- =========================================================================
 -- 5. Despawn Logic
 -- =========================================================================
@@ -839,9 +843,12 @@ function spawner.inspect_motion_reflection()
         if td_layer then
             log_debug("--- via.motion.TreeLayer: Locomotion & Playback Methods ---")
             for _, m in ipairs(td_layer:get_methods()) do
-                local mname = string.lower(m:get_name())
-                if string.find(mname, "motion") or string.find(mname, "play") or string.find(mname, "speed") or string.find(mname, "frame") or string.find(mname, "reset") then
-                    log_debug("  " .. format_re_method(m))
+                local raw_name = m and m:get_name()
+                if raw_name then
+                    local mname = string.lower(raw_name)
+                    if string.find(mname, "motion") or string.find(mname, "play") or string.find(mname, "speed") or string.find(mname, "frame") or string.find(mname, "reset") then
+                        log_debug("  " .. format_re_method(m))
+                    end
                 end
             end
         end
@@ -851,9 +858,12 @@ function spawner.inspect_motion_reflection()
         if td_mot then
             log_debug("--- via.motion.Motion: Play & Bank Methods ---")
             for _, m in ipairs(td_mot:get_methods()) do
-                local mname = string.lower(m:get_name())
-                if string.find(mname, "motion") or string.find(mname, "play") or string.find(mname, "bank") or string.find(mname, "layer") or string.find(mname, "speed") then
-                    log_debug("  " .. format_re_method(m))
+                local raw_name = m and m:get_name()
+                if raw_name then
+                    local mname = string.lower(raw_name)
+                    if string.find(mname, "motion") or string.find(mname, "play") or string.find(mname, "bank") or string.find(mname, "layer") or string.find(mname, "speed") then
+                        log_debug("  " .. format_re_method(m))
+                    end
                 end
             end
         end
@@ -1881,7 +1891,7 @@ re.on_frame(function()
     pcall(update_motion_telemetry)
 
     -- Automatic reflection dump once gameplay is ready
-    if not spawner.motion.reflection_dumped and is_gameplay_ready() then
+    if not spawner.motion.reflection_dumped then
         spawner.motion.reflection_dumped = true
         pcall(spawner.inspect_motion_reflection)
     end
