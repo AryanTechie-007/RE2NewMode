@@ -37,9 +37,10 @@ local HAIR_CANDIDATES = {
     "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair.pfb"
 }
 
-spawner.best_body = nil
-spawner.best_head = nil
-spawner.best_hair = nil
+spawner.best_body = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_body_costume_a.pfb"
+spawner.best_head = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_face_costume_a.pfb"
+spawner.best_hair = "objectroot/prefab/character/survivor/parts/pl1000/pl1000_hair_costume_a.pfb"
+spawner.active_scene = nil
 
 -- Streaming State
 spawner.body_pfb = nil
@@ -120,9 +121,11 @@ function spawner.scan_all_candidates()
     for _, path in ipairs(BODY_CANDIDATES) do
         local exists = false
         pcall(function()
-            local pfb = sdk.create_instance("via.Prefab"):add_ref()
-            pfb:call("set_Path", path)
-            exists = pfb:call("get_Exist")
+            local pfb = sdk.create_instance("via.Prefab")
+            if pfb then
+                pfb:call("set_Path", path)
+                exists = pfb:call("get_Exist")
+            end
         end)
         if exists then
             log_debug("  [BODY: TRUE]  " .. path)
@@ -135,9 +138,11 @@ function spawner.scan_all_candidates()
     for _, path in ipairs(HEAD_CANDIDATES) do
         local exists = false
         pcall(function()
-            local pfb = sdk.create_instance("via.Prefab"):add_ref()
-            pfb:call("set_Path", path)
-            exists = pfb:call("get_Exist")
+            local pfb = sdk.create_instance("via.Prefab")
+            if pfb then
+                pfb:call("set_Path", path)
+                exists = pfb:call("get_Exist")
+            end
         end)
         if exists then
             log_debug("  [HEAD: TRUE]  " .. path)
@@ -150,9 +155,11 @@ function spawner.scan_all_candidates()
     for _, path in ipairs(HAIR_CANDIDATES) do
         local exists = false
         pcall(function()
-            local pfb = sdk.create_instance("via.Prefab"):add_ref()
-            pfb:call("set_Path", path)
-            exists = pfb:call("get_Exist")
+            local pfb = sdk.create_instance("via.Prefab")
+            if pfb then
+                pfb:call("set_Path", path)
+                exists = pfb:call("get_Exist")
+            end
         end)
         if exists then
             log_debug("  [HAIR: TRUE]  " .. path)
@@ -545,6 +552,89 @@ function spawner.get_player_game_object(player)
     return go or player
 end
 
+-- Resolve player 3D Transform position safely
+function spawner.get_player_position(player)
+    player = player or spawner.get_master_player()
+    if not player then return nil end
+
+    local pos = nil
+    pcall(function()
+        local tf = player:call("get_Transform")
+        if tf then pos = tf:call("get_Position") end
+    end)
+    if not pos then
+        pcall(function()
+            local go = spawner.get_player_game_object(player)
+            if go and go.call then
+                local tf = go:call("get_Transform")
+                if tf then pos = tf:call("get_Position") end
+            end
+        end)
+    end
+    return pos
+end
+
+-- Comprehensive lifecycle & level streaming guard:
+-- Prevents any script execution during save loads, scene unloads, or title screens
+function spawner.is_gameplay_ready()
+    -- 1. Native SceneManager check
+    local scene_man = nil
+    pcall(function() scene_man = sdk.get_native_singleton("via.SceneManager") end)
+    if not scene_man then return false end
+
+    -- 2. Scene Loading Guard: Never run during scene/level streaming!
+    local is_loading = false
+    pcall(function()
+        if scene_man.call then
+            if scene_man:call("get_IsLoading") == true then is_loading = true end
+            if scene_man:call("get_Loading") == true then is_loading = true end
+        end
+    end)
+    if is_loading then return false end
+
+    -- 3. Active Scene Guard & Transition Detection
+    local cur_scene = nil
+    pcall(function() cur_scene = scene_man:call("get_CurrentScene") end)
+    if not cur_scene then return false end
+
+    if spawner.active_scene and spawner.active_scene ~= cur_scene then
+        -- Scene transitioned! Despawn old entities immediately to prevent dangling pointer crashes
+        spawner.execute_despawn()
+    end
+    spawner.active_scene = cur_scene
+
+    -- 4. ScenarioManager Transition Guard
+    local scen_man = nil
+    pcall(function() scen_man = sdk.get_managed_singleton("app.ropeway.ScenarioManager") end)
+    if scen_man then
+        local is_trans = false
+        pcall(function()
+            is_trans = scen_man:call("get_IsTransition") or scen_man:call("isTransition") or false
+        end)
+        if is_trans then return false end
+    end
+
+    -- 5. Master Player Character & 3D Transform Guard
+    local player = spawner.get_master_player()
+    if not player then return false end
+
+    local player_go = spawner.get_player_game_object(player)
+    if not player_go then return false end
+
+    local player_tf = nil
+    pcall(function() player_tf = player_go:call("get_Transform") end)
+    if not player_tf then return false end
+
+    local pos = spawner.get_player_position(player)
+    if not pos or not pos.x or not pos.y or not pos.z then return false end
+
+    -- Guard against NaN or uninitialized (0, 0, 0)
+    if pos.x ~= pos.x or pos.y ~= pos.y or pos.z ~= pos.z then return false end
+    if pos.x == 0.0 and pos.y == 0.0 and pos.z == 0.0 then return false end
+
+    return true, player, player_go, player_tf, pos
+end
+
 -- =========================================================================
 -- 5. Despawn Logic
 -- =========================================================================
@@ -555,14 +645,26 @@ function spawner.execute_despawn()
         local cur_scene = nil
         pcall(function() cur_scene = scene_man and scene_man:call("get_CurrentScene") end)
 
+        local go_td = sdk.find_type_definition("via.GameObject")
+        local destroy_static = go_td and go_td:get_method("destroy(via.GameObject)")
+
         for _, entity in ipairs(spawner.spawned_entities) do
             pcall(function()
                 if entity and entity.call then
                     pcall(function() entity:call("set_DrawSelf", false) end)
                     pcall(function() entity:call("set_UpdateSelf", false) end)
                     if cur_scene then
-                        pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", entity) end)
-                        pcall(function() cur_scene:call("destroyGameObject", entity) end)
+                        local destroyed = false
+                        pcall(function()
+                            cur_scene:call("destroyGameObject(via.GameObject)", entity)
+                            destroyed = true
+                        end)
+                        if not destroyed then
+                            pcall(function() cur_scene:call("destroyGameObject", entity) end)
+                        end
+                    end
+                    if destroy_static then
+                        pcall(function() destroy_static:call(nil, entity) end)
                     end
                 end
             end)
@@ -620,7 +722,7 @@ function spawner.start_spawn(mode)
 
     -- Create Body Prefab
     pcall(function()
-        local b = sdk.create_instance("via.Prefab"):add_ref()
+        local b = sdk.create_instance("via.Prefab")
         b:call("set_Path", body_path)
         b:call("set_Standby", true)
         spawner.body_pfb = b
@@ -629,7 +731,7 @@ function spawner.start_spawn(mode)
     -- Create Head and Hair Prefabs if full mode
     if spawner.mode == "full" and head_path then
         pcall(function()
-            local h = sdk.create_instance("via.Prefab"):add_ref()
+            local h = sdk.create_instance("via.Prefab")
             h:call("set_Path", head_path)
             h:call("set_Standby", true)
             spawner.head_pfb = h
@@ -637,7 +739,7 @@ function spawner.start_spawn(mode)
     end
     if spawner.mode == "full" and hair_path then
         pcall(function()
-            local hr = sdk.create_instance("via.Prefab"):add_ref()
+            local hr = sdk.create_instance("via.Prefab")
             hr:call("set_Path", hair_path)
             hr:call("set_Standby", true)
             spawner.hair_pfb = hr
@@ -1378,14 +1480,14 @@ end
 -- 8. Master Frame Loop (re.on_frame)
 -- =========================================================================
 re.on_frame(function()
+    -- Guard: Only run frame logic if player is actually loaded into a playable scene and not loading
+    local ready, player, player_go, player_tf, player_pos = spawner.is_gameplay_ready()
+    if not ready then return end
+
     local now = os.clock()
     local dt = spawner.last_time and (now - spawner.last_time) or 0.0166
     spawner.last_time = now
     if dt <= 0.0 or dt > 0.1 then dt = 0.0166 end
-
-    -- Guard: Only run frame logic if player is actually loaded into a playable scene
-    local player = spawner.get_master_player()
-    if not player then return end
 
     -- Day 4: Tactical Command Wheel Input
     pcall(update_command_wheel_input)
@@ -1394,10 +1496,7 @@ re.on_frame(function()
     if spawner.streaming and spawner.body_pfb then
         spawner.stream_frames = spawner.stream_frames + 1
 
-        local player = spawner.get_master_player()
-        local player_go = spawner.get_player_game_object(player)
-        local player_tf = player_go and player_go:call("get_Transform")
-        local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or { x = 0, y = 0, z = 0 }
+        local front_pos = player_tf and get_front_spawn_position(player_tf, 2.0) or player_pos or { x = 0, y = 0, z = 0 }
         local vpos = (Vector3f and Vector3f.new and Vector3f.new(front_pos.x, front_pos.y, front_pos.z)) or front_pos
 
         -- 1. Instantiate Body if not yet done
@@ -1405,7 +1504,6 @@ re.on_frame(function()
             local body_obj = nil
             pcall(function() body_obj = spawner.body_pfb:call("instantiate(via.vec3)", vpos) end)
             if body_obj then
-                pcall(function() body_obj:add_ref() end)
                 local b_tf = nil
                 pcall(function() b_tf = body_obj:call("get_Transform") end)
                 if b_tf then
@@ -1439,7 +1537,6 @@ re.on_frame(function()
             local head_obj = nil
             pcall(function() head_obj = spawner.head_pfb:call("instantiate(via.vec3)", vpos) end)
             if head_obj then
-                pcall(function() head_obj:add_ref() end)
                 pcall(function()
                     local h_tf = head_obj:call("get_Transform")
                     if h_tf and b_tf then h_tf:call("set_Parent", b_tf) end
@@ -1457,7 +1554,6 @@ re.on_frame(function()
             local hair_obj = nil
             pcall(function() hair_obj = spawner.hair_pfb:call("instantiate(via.vec3)", vpos) end)
             if hair_obj then
-                pcall(function() hair_obj:add_ref() end)
                 pcall(function()
                     local hr_tf = hair_obj:call("get_Transform")
                     if hr_tf and b_tf then hr_tf:call("set_Parent", b_tf) end
@@ -1506,8 +1602,10 @@ re.on_frame(function()
     end
 end)
 
--- Initial scan on script load
-pcall(spawner.scan_all_candidates)
+-- Initial scan on script load (only if not pre-populated)
+if not spawner.best_body then
+    pcall(spawner.scan_all_candidates)
+end
 
 -- =========================================================================
 -- 9. Clean, Minimalist ImGui Spawner UI (Day 1 - 3 Dashboard)
@@ -1757,7 +1855,10 @@ re.on_frame(function()
             imgui.end_window()
         end
     end)
-    pcall(draw_command_wheel)
+
+    if spawner.is_gameplay_ready() then
+        pcall(draw_command_wheel)
+    end
 end)
 
 -- REFramework Menu entry
@@ -1765,9 +1866,10 @@ re.on_draw_ui(function()
     draw_spawner_ui("##menu")
 end)
 
--- Reset hook to ensure normal timescale on script reset
+-- Reset hook to ensure clean despawn and normal timescale on script reset
 re.on_script_reset(function()
     pcall(function()
+        spawner.execute_despawn()
         local time_man = sdk.get_managed_singleton("app.ropeway.TimeManager")
         if time_man then time_man:call("setTimeScale", 1.0) end
     end)
