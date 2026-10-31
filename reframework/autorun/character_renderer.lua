@@ -932,11 +932,15 @@ local function is_key_down(key_name, vk_code)
     end
 
     -- Layer 3: REFramework get_keyboard_state array check
+    -- Note: In REFramework Lua, get_keyboard_state() returns a 1-indexed table of 256 keys (1 to 256).
+    -- Win32 Virtual Key codes are 0-indexed (0 to 255), so the Lua table index is vk_code + 1.
+    -- (Checking kb_state[vk_code] without +1 checks the preceding key, e.g. checking 0x54/'T' would test 0x53/'S'!)
     if reframework and reframework.get_keyboard_state and vk_code then
         local down = false
         pcall(function()
             local kb_state = reframework:get_keyboard_state() or reframework.get_keyboard_state()
-            if kb_state and kb_state[vk_code] and kb_state[vk_code] ~= 0 then
+            local lua_idx = vk_code + 1
+            if kb_state and kb_state[lua_idx] and kb_state[lua_idx] ~= 0 then
                 down = true
             end
         end)

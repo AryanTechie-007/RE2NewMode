@@ -76,11 +76,18 @@ end
 
 -- Detect hardware trigger button state every frame
 function command_wheel.update_input()
-    -- Check if middle mouse button or hotkey is held
+    -- Check if hotkey is held
     local is_key_down = false
     pcall(function()
         if reframework and reframework.is_key_down then
-            is_key_down = reframework.is_key_down(config.command_wheel_key)
+            is_key_down = reframework:is_key_down(config.command_wheel_key) or reframework.is_key_down(config.command_wheel_key)
+        end
+        if not is_key_down and reframework and reframework.get_keyboard_state then
+            local kb_state = reframework:get_keyboard_state() or reframework.get_keyboard_state()
+            local lua_idx = config.command_wheel_key + 1
+            if kb_state and kb_state[lua_idx] and kb_state[lua_idx] ~= 0 then
+                is_key_down = true
+            end
         end
     end)
 
