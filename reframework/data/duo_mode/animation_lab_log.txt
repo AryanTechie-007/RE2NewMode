@@ -141,3 +141,143 @@
 [18:37:11] [Exp C] Target selected for playback test: Leon (Player Actor - CAUTION: modifies player animation)
 [18:37:11] [Exp C] changeMotion invoked cleanly! Monitoring frame progression from 172.49...
 [18:37:12] [Exp C] FRAME_PROGRESSION_VERIFIED: MotionID 162 on Bank 1 progressed (172.5 -> 0.0, +45 ticks). Pending visual confirmation in viewport.
+[19:00:49] [Logger] Structured CSV session logging initialized.
+[19:01:52] ================================================================
+[19:01:52] STARTING EXPERIMENT A: Native NPC Allocation Probe (Strict Evaluation v1.3)
+[19:01:52] ================================================================
+[19:01:52] [Exp A] Type Resolved: app.ropeway.SurvivorAssignManager
+[19:01:52]    [Candidate Method] app.ropeway.SurvivorAssignManager.CastingRequestResult standby(app.ropeway.PlayerDefine.PlayerType Player, app.ropeway.SurvivorAssignManager.CastingReason Reason, app.ropeway.SurvivorAssignManager.OfferMode Mode)
+[19:01:52]    [Candidate Method] app.ropeway.SurvivorAssignManager.CastingRequestResult standby(app.ropeway.NpcDefine.NPCType Npc, app.ropeway.SurvivorAssignManager.CastingReason Reason, app.ropeway.SurvivorAssignManager.OfferMode Mode)
+[19:01:52]    [Candidate Method] app.ropeway.SurvivorAssignManager.CastingRequestResult standby(app.ropeway.ActorDefine.ActorType Actor, app.ropeway.SurvivorAssignManager.CastingReason Reason, app.ropeway.SurvivorAssignManager.OfferMode Mode, app.ropeway.gamemastering.Map.ID MapID)
+[19:01:52] [Exp A] Type Resolved: app.ropeway.SurvivorAssignManager.CastingOrder
+[19:01:52] [Exp A] Type Resolved: app.ropeway.SurvivorAssignManager.CastingOrderNpc
+[19:01:52] [Exp A] Type Resolved: app.ropeway.SurvivorAssignManager.CastingOrderActor
+[19:01:52] [Exp A] Type Resolved: app.ropeway.SurvivorAssignManager.CastingOrderPlayer
+[19:01:52] [Exp A] Type Resolved: app.ropeway.SurvivorStandbyCatalog
+[19:01:52] [Exp A] Type Resolved: app.ropeway.SurvivorManager
+[19:01:52]    [Candidate Method] app.ropeway.SurvivorCastingRequest get_ExecCastingRequest()
+[19:01:52]    [Candidate Method] System.Void set_ExecCastingRequest(app.ropeway.SurvivorCastingRequest value)
+[19:01:52]    [Candidate Method] app.ropeway.SurvivorCastingRequest get_PastExecCastingRequest()
+[19:01:52]    [Candidate Method] System.Void set_PastExecCastingRequest(app.ropeway.SurvivorCastingRequest value)
+[19:01:52]    [Candidate Method] System.Void requestCasting(app.ropeway.SurvivorCastingRequest Request)
+[19:01:52]    [Candidate Method] System.Boolean inCasting()
+[19:01:52]    [Candidate Method] System.Void applyCastingRequest()
+[19:01:52]    [Candidate Method] System.Boolean enableCasting(System.Collections.Generic.HashSet`1<app.ropeway.SurvivorCast> LoadCastList, System.Collections.Generic.HashSet`1<app.ropeway.SurvivorCast> InstantiateCastList)
+[19:01:52]    [Candidate Method] System.Void applyLoadCast(System.Collections.Generic.HashSet`1<app.ropeway.SurvivorCast> LoadCastList, System.Collections.Generic.HashSet`1<app.ropeway.SurvivorCast> PastLoadCastList)
+[19:01:52]    [Candidate Method] System.Void applyIntantiateCast(System.Collections.Generic.HashSet`1<app.ropeway.SurvivorCast> InstantiateCastList, System.Collections.Generic.HashSet`1<app.ropeway.SurvivorCast> PastInstantiateCastList)
+[19:01:52] [Exp A] Type Resolved: app.ropeway.PlayerManager
+[19:01:52] [Exp A] Type Not Found: app.ropeway.survivor.SurvivorParamCatalog
+[19:01:52] [Exp A] SurvivorAssignManager singleton FOUND at address: sol.REManagedObject*: 0000020C161378F8
+[19:01:52] [Exp A] SurvivorStandbyCatalog singleton: NIL
+[19:01:52] [Exp A] SurvivorAssignManager Fields:
+[19:01:52]    Field 'CastingTable' = sol.REManagedObject*: 0000020C16137D08
+[19:01:52]    Field 'RequestTransactionNow' = false
+[19:01:52]    Field 'StackRequest' = false
+[19:01:52]    Field 'PlayerPositionAtRequest' = sol.glm::vec<3,float,0>: 0000020C1615E858
+[19:01:52]    Field 'CurrentPhase' = 0
+[19:01:52]    Field 'NeedToCheckMap' = false
+[19:01:52]    Field 'RequestOption' = 0
+[19:01:52]    Field 'ProcessingOption' = 0
+[19:01:52]    Field 'NeedToCheckLocation' = false
+[19:01:52]    Field 'LoadLocationIDList' = sol.REManagedObject*: 0000020C161391F8
+[19:01:52] [Exp A] PlayerDefine.PlayerType enum fields:
+[19:01:52]    PlayerType.value__ = nil
+[19:01:52]    PlayerType.INVALID = -1
+[19:01:52]    PlayerType.PL0000 = 0
+[19:01:52]    PlayerType.PL1000 = 1000
+[19:01:52]    PlayerType.PL2000 = 2000
+[19:01:52]    PlayerType.PL3000 = 3000
+[19:01:52]    PlayerType.PL4000 = 4000
+[19:01:52]    PlayerType.PL4100 = 4100
+[19:01:52]    PlayerType.PL5000 = 5000
+[19:01:52]    PlayerType.PL5100 = 5100
+[19:01:52]    PlayerType.PL5200 = 5200
+[19:01:52]    PlayerType.PL5300 = 5300
+[19:01:52]    PlayerType.PL5400 = 5400
+[19:01:52]    PlayerType.PL5700 = 5700
+[19:01:52]    PlayerType.PL6400 = 6400
+[19:01:52]    PlayerType.PL5600 = 5600
+[19:01:52]    PlayerType.PL7500 = 7500
+[19:01:52] [Exp A] CastingReason enum fields:
+[19:01:52]    CastingReason.value__ = nil
+[19:01:52]    CastingReason.None = 0
+[19:01:52]    CastingReason.InitialSet = 1
+[19:01:52]    CastingReason.Event = 2
+[19:01:52]    CastingReason.Level = 4
+[19:01:52]    CastingReason.Debug = 8
+[19:01:52] [Exp A] OfferMode enum fields:
+[19:01:52]    OfferMode.value__ = nil
+[19:01:52]    OfferMode.Normal = 0
+[19:01:52]    OfferMode.OrderUnderVacant = 1
+[19:01:52] [Exp A] CastingRequestResult enum fields:
+[19:01:52]    CastingRequestResult.value__ = nil
+[19:01:52]    CastingRequestResult.Accepted = 0
+[19:01:52]    CastingRequestResult.Refused = 1
+[19:01:52] [Exp A] Invoking candidate standby method: app.ropeway.SurvivorAssignManager.CastingRequestResult standby(app.ropeway.PlayerDefine.PlayerType Player, app.ropeway.SurvivorAssignManager.CastingReason Reason, app.ropeway.SurvivorAssignManager.OfferMode Mode)
+[19:01:52] [Exp A] standby(1, 0, 0) returned: ok=true, result=1
+[19:01:52] [Exp A] SurvivorManager singleton present: sol.REManagedObject*: 0000020C1613B548
+[19:01:52]    SurvivorManager:inCasting() = false
+[19:01:52]    SurvivorManager:get_ExecCastingRequest() = sol.REManagedObject*: 0000020C1613B188
+[19:01:52]    SurvivorManager has pending request. Attempting applyCastingRequest()...
+[19:01:52] [Exp A] Final Verdict: UNVERIFIED: SurvivorAssignManager types mapped, but direct parameterless/int cast returned nil. Requires formal CastingOrder construction.
+[19:01:52] ================================================================
+[19:02:04] ================================================================
+[19:02:04] STARTING EXPERIMENT B: Character Duplication Probe (Rigorous Evaluation v1.3)
+[19:02:04] ================================================================
+[19:02:04] [Exp B] Active player GameObject: sol.REManagedObject*: 0000020B9F7D2E48
+[19:02:04] [Exp B] Target Scene: sol.REManagedObject*: 0000020BD660CB38 (Source: player_go:get_Folder():get_Scene())
+[19:02:04] [Exp B] Player Folder: sol.REManagedObject*: 0000020BD660CEF8
+[19:02:04] [Exp B] FAIL: duplicateGameObject returned nil across all tested Scene/Folder signatures.
+[19:02:13] ================================================================
+[19:02:13] STARTING EXPERIMENT B: Character Duplication Probe (Rigorous Evaluation v1.3)
+[19:02:13] ================================================================
+[19:02:13] [Exp B] Active player GameObject: sol.REManagedObject*: 0000020B9F7D2E48
+[19:02:13] [Exp B] Target Scene: sol.REManagedObject*: 0000020BD660CD18 (Source: player_go:get_Folder():get_Scene())
+[19:02:13] [Exp B] Player Folder: sol.REManagedObject*: 0000020BD660C228
+[19:02:13] [Exp B] FAIL: duplicateGameObject returned nil across all tested Scene/Folder signatures.
+[19:02:27] ================================================================
+[19:02:27] STARTING EXPERIMENT C (Step 1): Motion Bank & Layer Inspection
+[19:02:27] ================================================================
+[19:02:27] [Exp C] Leon MotionBankAsset: sol.REManagedObject*: 0000020BD660BEB8
+[19:02:27] [Exp C] Leon Layer[0]: BankID=1, MotionID=160, Frame=166.94, Speed=1.00, Play=nil
+[19:02:27] [Exp C] Leon Layer[1]: BankID=1, MotionID=2000, Frame=6.66, Speed=1.00, Play=nil
+[19:02:27] [Exp C] Leon Layer[2]: BankID=10000, MotionID=2, Frame=30.00, Speed=1.00, Play=nil
+[19:02:27] [Exp C] Leon Layer[3]: BankID=0, MotionID=4294967295, Frame=0.00, Speed=1.00, Play=nil
+[19:02:27] [Exp C] INSPECTION_COMPLETE: Leon MotionBankAsset valid (sol.REManagedObject*: 0000020BD660BEB8). Active MotionID=160, BankID=1. Ready for playback test.
+[19:02:27] ================================================================
+[19:02:30] ================================================================
+[19:02:30] STARTING EXPERIMENT C (Step 2): Controlled Playback Test (MotionID: 160, BankID: 1)
+[19:02:30] ================================================================
+[19:02:30] [Exp C] Target selected for playback test: Claire (character_renderer.lua Prefab Body)
+[19:02:30] [Exp C] changeMotion invoked cleanly! Monitoring frame progression from 0.00...
+[19:02:32] [Exp C] PARTIAL: MotionID 160 assigned, but frame remained stationary at 0.0 (PlaySpeed=0 or animation paused).
+[19:02:32] ================================================================
+[19:02:32] STARTING EXPERIMENT C (Step 2): Controlled Playback Test (MotionID: 160, BankID: 1)
+[19:02:32] ================================================================
+[19:02:32] [Exp C] Target selected for playback test: Claire (character_renderer.lua Prefab Body)
+[19:02:32] [Exp C] changeMotion invoked cleanly! Monitoring frame progression from 0.00...
+[19:02:33] [Exp C] PARTIAL: MotionID 160 assigned, but frame remained stationary at 0.0 (PlaySpeed=0 or animation paused).
+[19:02:34] ================================================================
+[19:02:34] STARTING EXPERIMENT C (Step 2): Controlled Playback Test (MotionID: 161, BankID: 1)
+[19:02:34] ================================================================
+[19:02:34] [Exp C] Target selected for playback test: Claire (character_renderer.lua Prefab Body)
+[19:02:34] [Exp C] changeMotion invoked cleanly! Monitoring frame progression from 0.00...
+[19:02:35] [Exp C] PARTIAL: MotionID 161 assigned, but frame remained stationary at 0.0 (PlaySpeed=0 or animation paused).
+[19:02:52] ================================================================
+[19:02:52] STARTING EXPERIMENT C (Step 2): Controlled Playback Test (MotionID: 160, BankID: 1)
+[19:02:52] ================================================================
+[19:02:52] [Exp C] Target selected for playback test: Claire (character_renderer.lua Prefab Body)
+[19:02:52] [Exp C] changeMotion invoked cleanly! Monitoring frame progression from 0.00...
+[19:02:53] [Exp C] PARTIAL: MotionID 160 assigned, but frame remained stationary at 0.0 (PlaySpeed=0 or animation paused).
+[19:02:56] ================================================================
+[19:02:56] STARTING EXPERIMENT C (Step 2): Controlled Playback Test (MotionID: 161, BankID: 1)
+[19:02:56] ================================================================
+[19:02:56] [Exp C] Target selected for playback test: Claire (character_renderer.lua Prefab Body)
+[19:02:56] [Exp C] changeMotion invoked cleanly! Monitoring frame progression from 0.00...
+[19:02:57] [Exp C] PARTIAL: MotionID 161 assigned, but frame remained stationary at 0.0 (PlaySpeed=0 or animation paused).
+[19:03:19] ================================================================
+[19:03:19] STARTING EXPERIMENT C (Step 2): Controlled Playback Test (MotionID: 162, BankID: 1)
+[19:03:19] ================================================================
+[19:03:19] [Exp C] Target selected for playback test: Claire (character_renderer.lua Prefab Body)
+[19:03:19] [Exp C] changeMotion invoked cleanly! Monitoring frame progression from 0.00...
+[19:03:21] [Exp C] PARTIAL: MotionID 162 assigned, but frame remained stationary at 0.0 (PlaySpeed=0 or animation paused).
