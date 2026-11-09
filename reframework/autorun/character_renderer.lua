@@ -730,6 +730,7 @@ function spawner.execute_despawn()
         end)
     end
     spawner.cutscene_active = false
+    spawner.active_scene = nil
     spawner.loco_status = "Stationary in Viewport (Follow is OFF)"
     spawner.last_status = "Despawned - Standing by"
     log_debug("Despawn executed cleanly.")
@@ -1760,17 +1761,21 @@ local function draw_command_wheel()
 end
 
 -- =========================================================================
--- 8. Master Frame Loop (re.on_frame)
+-- 8. Master Frame Controller
 -- =========================================================================
-re.on_frame(function()
+local function update_master_gameplay(dt)
     -- Guard: Only run frame logic if player is actually loaded into a playable scene and not loading
     local ready, player, player_go, player_tf, player_pos = spawner.is_gameplay_ready()
     if not ready then return end
 
-    local now = os.clock()
-    local dt = spawner.last_time and (now - spawner.last_time) or 0.0166
-    spawner.last_time = now
-    if dt <= 0.0 or dt > 0.1 then dt = 0.0166 end
+    -- Scene change guard: despawn previous scene entities if the player transitioned scenes
+    local current_scene = nil
+    pcall(function() current_scene = player_go:call("get_Scene") end)
+    if spawner.active_scene and current_scene and spawner.active_scene ~= current_scene then
+        log_debug("Scene change detected. Performing clean despawn of previous scene entities.")
+        spawner.execute_despawn()
+    end
+    spawner.active_scene = current_scene
 
     -- Day 4: Tactical Command Wheel Input
     pcall(update_command_wheel_input)
@@ -1902,7 +1907,7 @@ re.on_frame(function()
             update_companion_locomotion(dt)
         end)
     end
-end)
+end
 
 -- Initial scan on script load (only if not pre-populated)
 if not spawner.best_body then
@@ -2173,8 +2178,11 @@ local function draw_spawner_ui(suffix)
     end
 end
 
--- Dedicated Standalone Floating Window & Command Wheel Overlay
+-- =========================================================================
+-- Authoritative Single Master Update Loop (re.on_frame)
+-- =========================================================================
 re.on_frame(function()
+    -- 1. Standalone Floating Controller Window
     pcall(function()
         if imgui.begin_window("Claire Redfield Controller (Duo Mode)", true, 0) then
             draw_spawner_ui("##win")
@@ -2182,6 +2190,15 @@ re.on_frame(function()
         end
     end)
 
+    -- 2. Master Gameplay Execution (spawning, locomotion, transitions, telemetry)
+    local now = os.clock()
+    local dt = spawner.last_time and (now - spawner.last_time) or 0.0166
+    spawner.last_time = now
+    if dt <= 0.0 or dt > 0.1 then dt = 0.0166 end
+
+    pcall(update_master_gameplay, dt)
+
+    -- 3. In-Game Tactical Radial Command Wheel Overlay
     if spawner.is_gameplay_ready() then
         pcall(draw_command_wheel)
     end

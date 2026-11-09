@@ -4,7 +4,17 @@
 **Repository:** `https://github.com/AryanTechie-007/RE2NewMode` (Branch: `main`)  
 **Local Codebase:** `D:\Gamesregarding`  
 **Isolated Sandbox:** `D:\Games\RE2_DuoMode_Sandbox`  
-**Date:** October 26, 2026  
+**Baseline Tag:** `v0.1-baseline` (Permanent branch: `legacy/working-baseline`)  
+**Last Updated:** November 9, 2026  
+
+---
+
+## ⚠️ Important Update: Milestone 0 Technical Reset & Consolidation
+Following an in-depth code audit, the project has transitioned from the aspirational 14-day stub schedule to a milestone-based reverse-engineering roadmap:
+1. **Authoritative Runtime:** `character_renderer.lua` is established as the sole authoritative companion controller (multi-part mesh spawning, glide locomotion, portal defense, elevators, cutscene handling, and command wheel).
+2. **Parallel Runtime Disabled:** The unverified parallel modules and `duo_mode.lua` have been moved to `archive/experimental_modules/` to prevent conflicting `re.on_frame` loops and dual-spawning.
+3. **Single Master Update Loop:** Merged dual `re.on_frame` handlers into a single unified loop with scene-unload cleanup.
+4. **Milestone 1 Animation Research Lab:** Created `animation_lab.lua` to independently test Native NPC Allocation (`SurvivorAssignManager`), Character Duplication (`via.Scene.duplicateGameObject`), and Direct Motion Playback before modifying core locomotion.
 
 ---
 
