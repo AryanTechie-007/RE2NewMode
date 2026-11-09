@@ -1,78 +1,93 @@
-# Technical Handover & Bug Diagnosis Report
+# Technical Handover & Architecture Status Report
 
 **Project:** Resident Evil 2 Remake — Single-Player Dual-Protagonist Overhaul Mod (`Duo Mode`)  
-**Repository:** `https://github.com/AryanTechie-007/RE2NewMode` (Branch: `main`)  
-**Local Codebase:** `D:\Gamesregarding`  
-**Isolated Sandbox:** `D:\Games\RE2_DuoMode_Sandbox`  
-**Baseline Tag:** `v0.1-baseline` (Permanent branch: `legacy/working-baseline`)  
-**Last Updated:** November 9, 2026  
+**Repository:** [AryanTechie-007/RE2NewMode](https://github.com/AryanTechie-007/RE2NewMode) (Branch: `main`)  
+**Workspace Directory:** `D:\Gamesregarding` (Git repository root)  
+**Live Game Sandbox:** `D:\Games\RE2_DuoMode_Sandbox` (Standalone game installation with REFramework `dinput8.dll`)  
+**Baseline Release Tag:** `v0.1-baseline` (Permanent historical branch: `legacy/working-baseline`)  
+**Current Milestone:** Milestone 0 (Consolidation Complete) & Milestone 1 (Animation Research Spike)  
+**Date:** November 9, 2026  
 
 ---
 
-## ⚠️ Important Update: Milestone 0 Technical Reset & Consolidation
-Following an in-depth code audit, the project has transitioned from the aspirational 14-day stub schedule to a milestone-based reverse-engineering roadmap:
-1. **Authoritative Runtime:** `character_renderer.lua` is established as the sole authoritative companion controller (multi-part mesh spawning, glide locomotion, portal defense, elevators, cutscene handling, and command wheel).
-2. **Parallel Runtime Disabled:** The unverified parallel modules and `duo_mode.lua` have been moved to `archive/experimental_modules/` to prevent conflicting `re.on_frame` loops and dual-spawning.
-3. **Single Master Update Loop:** Merged dual `re.on_frame` handlers into a single unified loop with scene-unload cleanup.
-4. **Milestone 1 Animation Research Lab:** Created `animation_lab.lua` to independently test Native NPC Allocation (`SurvivorAssignManager`), Character Duplication (`via.Scene.duplicateGameObject`), and Direct Motion Playback before modifying core locomotion.
+## 1. Executive Summary & Architectural Pivot
+
+Following an in-depth repository audit and honest project assessment, the project has transitioned from an aspirational 14-day waterfall plan to a reverse-engineering roadmap focused on delivering a story-driven duo companion experience:
+
+1. **Retire Aspirational Modules:** The previously drafted 13 modules in `reframework/autorun/duo_mode/` (`combat_ai.lua`, `inventory_manager.lua`, `door_hooks.lua`, `health_manager.lua`, `audio_bridge.lua`, etc.) were largely Lua-side bookkeeping stubs. The "14/14 PASS" QA suite was asserting mocked Lua tables rather than native RE Engine hooks. These files have been safely preserved in [`archive/experimental_modules/`](file:///D:/Gamesregarding/archive/experimental_modules/) for future reference.
+2. **Authoritative Runtime Established:** [`reframework/autorun/character_renderer.lua`](file:///D:/Gamesregarding/reframework/autorun/character_renderer.lua) is established as the sole production companion controller. It contains all battle-tested engine interactions: multi-part 3D mesh streaming, NaN-safe glide locomotion, room portal transitions, kinematic elevator parenting, cutscene protection, and the radial tactical command wheel.
+3. **Single Master Update Loop:** Merged dual `re.on_frame` handlers into one authoritative loop with scene-change/unload detection to eliminate duplicate ticks and ghost actors.
+4. **Milestone 1 Animation Spike:** Created [`reframework/autorun/animation_lab.lua`](file:///D:/Gamesregarding/reframework/autorun/animation_lab.lua) as an isolated, sandboxed test harness with strict success criteria to investigate native NPC allocation, duplication, and motion playback without impacting core gameplay stability.
 
 ---
 
-## 1. Issues Identified & Resolved
+## 2. Verified In-Game Features vs. Roadmap Status (Rule 1 Classification)
 
-### Issue A: Locomotion Frame Loop Crash (`locomotion.lua:129`) — RESOLVED
-* **Root Cause:** In REFramework Lua, calling `comp_transform:call("get_Rotation")` returns a native `Quaternion` struct (`{x, y, z, w}`), which is an IL2CPP value type, not an `REManagedObject`. Invoking `:call("get_EulerAngles")` threw `method 'call' is not callable (a nil value)`. Similar calls existed in `locomotion.lua:81`, `portal_defense.lua:57`, and `combat_ai.lua:57`.
-* **Resolution:**
-  1. Built [`utils.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/utils.lua) with `utils.get_transform_yaw(transform)`. It queries `get_EulerAngles()`, `get_EulerAngle()`, and falls back to exact mathematical Quaternion-to-Yaw conversion ($\text{atan2}(2(wy + xz), 1 - 2(y^2 + z^2))$) with complete nil/NaN protection.
-  2. Wrapped all master frame loop calls in [`duo_mode.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode.lua) with `pcall` guards (`locomotion.update_locomotion`, `portal_defense.update`, `combat_ai.update`).
-
-### Issue B: Visual Mesh Rigging Gap — RESOLVED
-* **Root Cause:** RE Engine's skinned mesh renderer does not draw vertex buffers in the viewport unless the mesh component is bound to an active skeleton rig (`.skl`) and bone joint hierarchy. Creating an unrigged `via.GameObject` leaves the mesh invisible.
-* **Resolution:**
-  1. Implemented **Character Duplication** in [`spawner.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/spawner.lua) (`spawner.spawn_by_duplication`) using `via.Scene.duplicateGameObject(player_go)`. The clone inherits full bone matrices, clothing physics, and locomotion blend trees from the active scene.
-  2. Stripped input components safely via `spawner.strip_input_components` (`PlayerInputReceiver`, `PadManager`, `GamePad`) using `utils.get_component` to prevent hardware gamepad mirroring.
-  3. Integrated `app.ropeway.SurvivorManager` costume/character swap to Claire Redfield (`SurvivorType.PL1000 = 1`).
-  4. Retained Option 1 Component Assembly as a secondary manual fallback button in the UI.
-
-### Issue C: Component Lookup `ArgumentNullException` & GameObject `destroy` Warnings — RESOLVED
-* **Root Cause:** Calling `getComponent(System.Type)` with `sdk.find_type_definition(...)` passes a type definition rather than `System.Type` (`td:get_runtime_type()`), throwing `System.ArgumentNullException`. Calling `game_obj:call("destroy")` threw argument count warnings because `via.GameObject.destroy(via.GameObject)` is static.
-* **Resolution:**
-  1. Implemented `utils.get_component(game_obj, type_name)` with type definition checks and runtime type resolution.
-  2. Implemented `utils.destroy_game_object(game_obj)` which disables draw/update flags, invokes `via.Scene.destroyGameObject`, and safely invokes static `via.GameObject.destroy`.
-
----
-
-## 2. Production Systems Implemented (Days 1–14 Architecture)
-
-| Module | File | Implementation Summary | Status |
+| Subsystem / Feature | Active File | Architectural Status | Implementation Reality |
 | :--- | :--- | :--- | :--- |
-| **Day 1: Spawner** | [`spawner.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/spawner.lua) | Primary: `via.Scene.duplicateGameObject` (Rigged & Skinned Clone) + `SurvivorManager` costume swap; Fallback: Component Assembly. | **VERIFIED & OPERATIONAL** |
-| **Day 2: Locomotion** | [`locomotion.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/locomotion.lua) | World-to-local yaw transformation ($\Delta\theta = \theta_{\text{world}} - \text{CompanionYaw}$); stick scaling ($0.0 \to 0.5 \to 1.0$); Licker stealth speed clamping ($\le 0.45$). | **VERIFIED & OPERATIONAL** |
-| **Day 3: Portals** | [`portal_defense.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/portal_defense.lua) | Room boundary mismatch detection via `RoomArea:get_CurrentRoomID()`; elevator kinematic platform parenting. | **VERIFIED & OPERATIONAL** |
-| **Day 4: Orders & Wheel** | [`fsm.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/fsm.lua), [`command_wheel.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/command_wheel.lua) | 5-state FSM (`FOLLOW`, `WAIT`, `COVER`, `DOWNED`, `INTERACTING`); ImGui radial tactical wheel with $0.4\times$ timescale slowdown. | **VERIFIED & OPERATIONAL** |
-| **Day 5: Door Spoofing** | [`door_hooks.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/door_hooks.lua) | Cutscene protection (mesh hiding & survivor de-tagging); safe 1-frame key spoof state machine with Slot 1 restoration. | **VERIFIED & OPERATIONAL** |
-| **Day 6: Dual Inventory** | [`inventory_manager.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/inventory_manager.lua) | 8-slot partner inventory array; `[Take]` and `[Give]` actions; docked inventory window. | **VERIFIED & OPERATIONAL** |
-| **Day 7: Combat AI** | [`combat_ai.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/combat_ai.lua) | Gunfire raycast origin bound to `snd_muzzle` bone; layer mask filtering `Survivor`/`Player`; ammo decrement and *"I'm out!"* retreat. | **VERIFIED & OPERATIONAL** |
-| **Day 8: Downed/Revive** | [`health_manager.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/health_manager.lua) | Zombie grab filter converted to chip damage; 45s bleed-out timer; Green Herb ($35\%$) and First Aid Spray ($100\%$) revive. | **VERIFIED & OPERATIONAL** |
-| **Day 9: Audio Bridge** | [`audio_bridge.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/audio_bridge.lua) | C++ bridge interface, pause/resume hooks on `isPause`, and immediate audio cut on Game Over. | **VERIFIED & OPERATIONAL** |
-| **Day 10: Banter Engine** | [`banter_manager.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/banter_manager.lua) | Priority voice queue (`CRITICAL` > `COMBAT` > `EVENT` > `IDLE`), safe room whisper banter, danger HP alert, ammo callouts, and on-screen subtitles. | **VERIFIED & OPERATIONAL** |
-| **Day 13: Save Persistence**| [`save_manager.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/save_manager.lua) | Isolated multi-slot serialization (`save_state_slot_%02d.json`) and cross-campaign transition persistence (`slot 99`). | **VERIFIED & OPERATIONAL** |
-| **Automated QA Suite** | [`test_harness.lua`](file:///D:/Gamesregarding/reframework/autorun/duo_mode/test_harness.lua) | 14 unit and regression tests running at boot and via UI; asserts stick math, licker damping, anti-grab, inventory, yaw math, safe components, banter queue, and serialization. | **14/14 VERIFIED PASSING** |
+| **Claire 3D Mesh Spawning** | `character_renderer.lua` | `Implemented and tested in-game` | Multi-part streaming pipeline instantiates Body, Head, and Hair (`costume_a` Noir outfit) without crashing. |
+| **Gliding Follow Locomotion** | `character_renderer.lua` | `Implemented and tested in-game` | NaN-safe coordinate translation with camera flank waypoint tracking, speed lerping, and anti-overshoot dampening. |
+| **Room Portal Defense** | `character_renderer.lua` | `Implemented and tested in-game` | Queries `app.ropeway.StayAreaController`; snaps Claire through closed doors when room ID mismatches. |
+| **Elevator Kinematic Parenting** | `character_renderer.lua` | `Implemented and tested in-game` | Dynamically parents Claire's `via.Transform` to moving elevator platform hierarchy. |
+| **Cutscene Protection** | `character_renderer.lua` | `Implemented and tested in-game` | Hooks `CutsceneManager` to hide companion during cinematics and repositions them on scene resume. |
+| **Rubber-Band Catch-up** | `character_renderer.lua` | `Implemented and tested in-game` | Teleports companion if separated by >10m horizontally or >3.2m vertically to avoid unloaded chunk voids. |
+| **Tactical Command Wheel** | `character_renderer.lua` | `Implemented and tested in-game` | ImGui radial menu (`FOLLOW`, `WAIT`, `COVER`) with 0.4x bullet-time slowdown via `app.ropeway.TimeManager`. |
+| **Multi-Layer Hardware Input** | `character_renderer.lua` | `Implemented and tested in-game` | Direct polling via `via.hid.Keyboard` + `via.hid.GamePad` with REFramework fallback. Supports Hold and Toggle `T`. |
+| **Player Duplication Fallback** | `character_renderer.lua` | `Implemented and tested in-game` | Clones player GameObject via `via.Scene.duplicateGameObject` and strips player input receivers. |
+| **Animation Research Lab** | `animation_lab.lua` | `Experimental (Milestone 1)` | Isolated research suite with strict criteria testing Experiments A (Native NPC), B (Duplication), and C (Motion Playback). |
+| **Walking/Running Leg Cycles** | `character_renderer.lua` | `Partially implemented` | Motion bank linking assigns Leon's bank asset, but MotionFsm2 transitions require active character controller allocation. |
+| **RPD Story Scenario Engine** | `docs/` | `Planned (Milestone 3)` | Scripted vertical slice: Courtyard meeting $\to$ Back gate entry $\to$ Main Hall $\to$ Safe Room dialogue. |
+| **Door Key Interactions** | `archive/` | `Planned (Milestone 4)` | Real hook into door interaction pipeline deferred until story prototype is playable. |
+| **Combat AI & Damaging Fire** | `archive/` | `Planned (Milestone 4)` | Raycasts, real damage dealing, and threat detection deferred to Milestone 4. |
+| **Health & Proximity Revive** | `archive/` | `Planned (Milestone 4)` | Real game damage integration (`DamageController` / `AttackPermitManager`) deferred to Milestone 4. |
+| **Dual Inventory** | `archive/` | `Planned (Milestone 4)` | Simple companion item transfer deferred until story prototype is playable. |
+| **Dynamic Banter & Audio** | `archive/` | `Planned (Milestone 5)` | On-screen subtitles foundation exists; external audio streaming bridge postponed. |
 
 ---
 
-## 3. Sandbox Deployment & Live Verification
+## 3. Historical Technical Issues & Resolutions
 
-All modified and newly created modules have been deployed directly to the live game sandbox:
+### Issue A: Locomotion Frame Loop Crash (`Quaternion` Value Type) — RESOLVED
+* **Root Cause:** In REFramework Lua, calling `comp_transform:call("get_Rotation")` returns a native IL2CPP `Quaternion` value struct (`{x, y, z, w}`), not an `REManagedObject`. Invoking `:call("get_EulerAngles")` on it threw a runtime nil exception.
+* **Resolution:** Implemented exact mathematical Quaternion-to-Yaw conversion ($\text{atan2}(2(wy + xz), 1 - 2(y^2 + z^2))$) with complete nil/NaN protection and wrapped all frame loop calls in `pcall`.
+
+### Issue B: Skinned Mesh Rigging Gap — RESOLVED
+* **Root Cause:** RE Engine's skinned mesh renderer does not draw vertex buffers in the viewport unless bound to an active skeleton rig (`.skl`) and bone hierarchy. Raw unrigged GameObjects remain invisible.
+* **Resolution:** Built the multi-part asset streaming pipeline in `character_renderer.lua` that binds body, head, and hair prefabs with proper transforms and visibility flags.
+
+### Issue C: Component Lookup `ArgumentNullException` & Static Destroy Warnings — RESOLVED
+* **Root Cause:** Passing a type definition (`sdk.find_type_definition`) instead of `System.Type` (`sdk.typeof` / `td:get_runtime_type()`) threw `ArgumentNullException`. Calling `game_obj:call("destroy")` threw argument count warnings because `via.GameObject.destroy` is a static method requiring the object as an argument.
+* **Resolution:** Standardized all component lookups with `sdk.typeof(...)` and unified object destruction to use `via.Scene.destroyGameObject` with safe fallback to `destroy_static:call(nil, entity)`.
+
+---
+
+## 4. Milestone 1 Animation Research Lab (`animation_lab.lua`)
+
+To prevent speculative reflection calls from destabilizing the core companion, [`animation_lab.lua`](file:///D:/Gamesregarding/reframework/autorun/animation_lab.lua) runs three independent experiments with strict, non-optimistic success criteria:
+
+1. **Experiment A (Native NPC Allocation):**
+   - Probes `app.ropeway.SurvivorAssignManager` and `SurvivorStandbyCatalog`.
+   - **Strict Criteria:** Only reports `PASS` if an entity is returned AND has active `via.motion.Motion` AND (`via.motion.MotionFsm2` or `SurvivorMotionController`). Otherwise reports `PARTIAL` or `UNVERIFIED`.
+2. **Experiment B (Character Duplication):**
+   - Clones player via `via.Scene.duplicateGameObject`.
+   - **Strict Criteria:** `input_stripped` is only true if input components are found AND verified disabled via `get_Valid() == false`. `independent_locomotion` requires verifying clone translation over 60 frames while Leon remains unmoved.
+   - **Safe Cleanup:** Uses a single confirmed scene destruction route without double-free/double-destruction risks.
+3. **Experiment C (Direct Motion Playback):**
+   - **Separated Inspection from Playback:** Inspection verifies Leon's `MotionBankAsset` and layer availability (`INSPECTION_COMPLETE`). Controlled playback tests a specific motion ID on an active actor and monitors frame progression over 40 frames.
+   - Only reports `PLAYBACK_VERIFIED` if the frame advances without a C++ exception (`KiUserExceptionDispatcher`).
+
+---
+
+## 5. Live Game Testing & Verification
+
+The compiled and consolidated scripts are deployed directly to the test sandbox:
 * **Source:** `D:\Gamesregarding\reframework\autorun\`
-* **Destination:** `D:\Games\RE2_DuoMode_Sandbox\reframework\autorun\`
-* **Data & Audio Directories:** `reframework/data/duo_mode/audio/`
+* **Target Sandbox:** `D:\Games\RE2_DuoMode_Sandbox\reframework\autorun\`
 
 ### In-Game Verification Steps:
 1. Launch `D:\Games\RE2_DuoMode_Sandbox\Resident Evil 2.exe`.
-2. Press **Insert** to toggle REFramework.
-3. In **ScriptRunner**, verify that all scripts load cleanly with `TEST SUMMARY: ALL TESTS PASSED (14/14)`.
-4. In **Script Generated UI**:
-   - Click **Spawn Companion (Clone & Rig)** — Claire spawns with full skeletal mesh rig, animations, and zero gamepad mirroring.
-   - Click **Save State (Slot 1)** / **Load State (Slot 1)** to verify persistent multi-slot inventory and HP.
-   - Click **Trigger Safe Room Voice** or **Trigger Low HP Voice** to verify audio playback and on-screen subtitles.
+2. Load an active gameplay save with Leon (e.g. RPD Main Hall).
+3. Press **Insert** to open the REFramework overlay menu.
+4. Under **Script Generated UI**:
+   - **Claire Redfield Controller (Duo Mode):** Use `Spawn Companion` to verify 3D mesh rendering, smooth follow locomotion, elevator parenting, and tactical commands (`T` key / radial menu).
+   - **Open Animation Research Lab Window:** Toggle the standalone research dashboard to test Experiments A, B, and C independently and inspect live diagnostics.
