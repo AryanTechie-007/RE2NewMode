@@ -281,6 +281,197 @@ local function get_playback_target()
 end
 
 -- =========================================================================
+-- STRUCTURED SESSION LOGGER — A/B/C RESEARCH TELEMETRY
+-- =========================================================================
+
+local session_logger = {
+    path = "reframework/data/duo_mode/animation_lab_session.csv",
+    frame = 0,
+    interval = 30, -- One snapshot every 30 REFramework frames
+    ready = false,
+}
+
+local function csv_value(value)
+    local s = tostring(value == nil and "" or value)
+    s = string.gsub(s, '"', '""')
+    return '"' .. s .. '"'
+end
+
+local function logger_write_row(values)
+    local ok, err = pcall(function()
+        local f = io.open(session_logger.path, "a")
+        if not f then
+            error("Could not open session CSV: " .. session_logger.path)
+        end
+
+        local row = {}
+        for i, value in ipairs(values) do
+            row[i] = csv_value(value)
+        end
+
+        f:write(table.concat(row, ",") .. "\n")
+        f:flush()
+        f:close()
+    end)
+
+    if not ok then
+        if log and log.error then
+            log.error("[AnimLab Logger] " .. tostring(err))
+        end
+        return false
+    end
+
+    return true
+end
+
+local function logger_validity(obj)
+    if not obj then return "NO_OBJECT" end
+
+    local ok, value = pcall(function()
+        return obj:call("get_Valid")
+    end)
+
+    if not ok then return "UNREADABLE" end
+    if value == true then return "TRUE" end
+    if value == false then return "FALSE" end
+    return "UNKNOWN"
+end
+
+local function logger_init()
+    if session_logger.ready then return end
+
+    local header = {
+        "record_type", "timestamp", "session_frame",
+        "scene_pointer", "player_pointer",
+        "A_status", "A_singleton", "A_actor_pointer",
+        "A_actor_valid", "A_motion", "A_fsm2",
+        "A_survivor_motion", "A_motion_active", "A_layer_count",
+        "A_casting_method_count",
+        "B_status", "B_clone_pointer", "B_clone_valid",
+        "B_input_stripped", "B_input_verified_disabled",
+        "B_transform_verified", "B_motion_ticking",
+        "B_components", "B_cleanup_status",
+        "B_loco_frames", "B_clone_displacement",
+        "B_leon_displacement", "B_loco_verdict",
+        "C_inspection_status", "C_playback_status",
+        "C_target_name", "C_target_pointer", "C_target_valid",
+        "C_bank_asset_present", "C_layer_count",
+        "C_active_motion_id", "C_active_bank_id",
+        "C_selected_motion_id", "C_selected_bank_id",
+        "C_monitor_active", "C_monitor_ticks",
+        "C_start_frame", "C_current_frame",
+        "C_visual_confirmed"
+    }
+
+    -- Create the header only when the file does not already exist.
+    local existing = io.open(session_logger.path, "r")
+    if existing then
+        existing:close()
+    else
+        logger_write_row(header)
+    end
+
+    session_logger.ready = true
+
+    logger_write_row({
+        "SESSION_START", os.date("%Y-%m-%d %H:%M:%S"),
+        0, "", "",
+        lab.version
+    })
+
+    lab_log("[Logger] Structured CSV session logging initialized.")
+end
+
+local function logger_snapshot()
+    local a = lab.exp_a
+    local b = lab.exp_b
+    local c = lab.exp_c
+    local loco = b.loco_test or {}
+    local monitor = c.playback_monitor or {}
+
+    local player = nil
+    local player_go = nil
+    local scene = nil
+
+    pcall(function() player = get_active_player() end)
+    pcall(function() player_go = get_player_go(player) end)
+    pcall(function() scene = get_current_scene(player_go) end)
+
+    local target = monitor.target_obj
+    local clone_valid = logger_validity(b.clone_entity)
+    local target_valid = logger_validity(target)
+
+    local row = {
+        "SNAPSHOT",
+        os.date("%Y-%m-%d %H:%M:%S"),
+        session_logger.frame,
+        tostring(scene),
+        tostring(player_go),
+
+        a.status,
+        tostring(a.singleton_found),
+        tostring(a.returned_actor),
+        tostring(a.actor_valid),
+        tostring(a.has_motion),
+        tostring(a.has_motion_fsm2),
+        tostring(a.has_survivor_motion),
+        tostring(a.motion_active),
+        a.layer_count,
+        #a.casting_methods,
+
+        b.status,
+        tostring(b.clone_entity),
+        clone_valid,
+        tostring(b.input_stripped),
+        tostring(b.input_verified_disabled),
+        tostring(b.independent_transform_control),
+        tostring(b.motion_ticking),
+        table.concat(b.surviving_components, ";"),
+        b.cleanup_status,
+
+        loco.current_frame or 0,
+        loco.max_clone_displacement or 0,
+        loco.max_leon_displacement or 0,
+        loco.verdict or "NOT_STARTED",
+
+        c.inspection_status,
+        c.playback_status,
+        c.target_name,
+        tostring(target),
+        target_valid,
+        tostring(c.leon_bank_asset ~= nil),
+        c.leon_layer_count,
+        c.leon_active_mid,
+        c.leon_active_bid,
+        c.selected_mid,
+        c.selected_bid,
+        tostring(monitor.active),
+        monitor.ticks_observed or 0,
+        monitor.start_frame or 0,
+        monitor.current_frame or 0,
+        tostring(c.visual_confirmed)
+    }
+
+    return logger_write_row(row)
+end
+
+local function logger_update()
+    session_logger.frame = session_logger.frame + 1
+
+    if not session_logger.ready then
+        logger_init()
+    end
+
+    if session_logger.frame % session_logger.interval == 0 then
+        logger_snapshot()
+    end
+end
+
+-- =========================================================================
+-- END STRUCTURED SESSION LOGGER
+-- =========================================================================
+
+-- =========================================================================
 -- EXPERIMENT A: Native NPC Allocation (SurvivorAssignManager Probe)
 -- =========================================================================
 
@@ -1400,6 +1591,7 @@ end
 
 re.on_frame(function()
     pcall(update_lab_telemetry)
+    pcall(logger_update)
 
     if lab.window_open then
         pcall(function()
