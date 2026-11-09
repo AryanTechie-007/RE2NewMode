@@ -5,7 +5,7 @@
 **Workspace Directory:** `D:\Gamesregarding` (Git repository root)  
 **Live Game Sandbox:** `D:\Games\RE2_DuoMode_Sandbox` (Standalone game installation with REFramework `dinput8.dll`)  
 **Baseline Release Tag:** `v0.1-baseline` (Permanent historical branch: `legacy/working-baseline`)  
-**Current Milestone:** Milestone 0 (Consolidation Complete) & Milestone 1 (Animation Research Spike)  
+**Current Milestone:** Milestone 0 (Consolidation Complete) & Milestone 1 (Animation Research Spike — Harness v1.5.0)  
 **Date:** November 9, 2026  
 
 ---
@@ -61,20 +61,21 @@ Following an in-depth repository audit and honest project assessment, the projec
 
 ---
 
-## 4. Milestone 1 Animation Research Lab (`animation_lab.lua`)
+## 4. Milestone 1 Animation Research Lab (`animation_lab.lua` v1.5.0)
 
-To prevent speculative reflection calls from destabilizing the core companion, [`animation_lab.lua`](file:///D:/Gamesregarding/reframework/autorun/animation_lab.lua) runs three independent experiments with strict, non-optimistic success criteria:
+To prevent speculative reflection calls from destabilizing the core companion, [`animation_lab.lua`](file:///D:/Gamesregarding/reframework/autorun/animation_lab.lua) runs three independent experiments with strict, non-optimistic success criteria and event-level telemetry:
 
-1. **Experiment A (Native NPC Allocation):**
-   - Probes `app.ropeway.SurvivorAssignManager` and `SurvivorStandbyCatalog`.
-   - **Strict Criteria:** Only reports `PASS` if an entity is returned AND has active `via.motion.Motion` AND (`via.motion.MotionFsm2` or `SurvivorMotionController`). Otherwise reports `PARTIAL` or `UNVERIFIED`.
-2. **Experiment B (Character Duplication):**
-   - Clones player via `via.Scene.duplicateGameObject`.
-   - **Strict Criteria:** `input_stripped` is only true if input components are found AND verified disabled via `get_Valid() == false`. `independent_locomotion` requires verifying clone translation over 60 frames while Leon remains unmoved.
-   - **Safe Cleanup:** Uses a single confirmed scene destruction route without double-free/double-destruction risks.
-3. **Experiment C (Direct Motion Playback):**
-   - **Separated Inspection from Playback:** Inspection verifies Leon's `MotionBankAsset` and layer availability (`INSPECTION_COMPLETE`). Controlled playback tests a specific motion ID on an active actor and monitors frame progression over 40 frames.
-   - Only reports `PLAYBACK_VERIFIED` if the frame advances without a C++ exception (`KiUserExceptionDispatcher`).
+1. **Experiment A (Native Survivor Casting):**
+   - Probes `app.ropeway.SurvivorAssignManager`, `SurvivorManager`, and `SurvivorStandbyCatalog`.
+   - **Empirical Findings (19:01 Test Run):** Resolved `PlayerDefine.PlayerType` enums: `PL0000 = 0` (Leon), `PL1000 = 1000` (Claire), `PL2000 = 2000` (Ada), `PL3000 = 3000` (Sherry). Previous exploratory call passed `1` instead of `1000` (`standby(1, 0, 0)`), which was refused. Calling standby triggered active request: `SurvivorManager:get_ExecCastingRequest() = 0000020C1613B188`.
+   - **v1.5 Enhancements:** Probes all 3 `standby()` overload signatures, inspects `CastingOrder` constructors and `SurvivorCastingRequest` field values, and executes controlled retries with Claire enum `PL1000 = 1000` across `InitialSet=1`, `Debug=8`, and `None=0`.
+2. **Experiment B (GameObject & Control Duplication):**
+   - Evaluates cloning via `via.Scene.duplicateGameObject`.
+   - **Empirical Findings (19:01 Test Run):** Scene successfully resolved via `player_go:get_Folder():get_Scene()`. However, `duplicateGameObject(player_go)` returned `nil`, indicating native engine player-singleton guards (`PlayerInputReceiver`, `PadManager`).
+   - **v1.5 Enhancements:** Reflects all duplication signatures on `via.Scene` and `via.Folder`. Implements a harmless non-player object control test (e.g. ambient prop/camera) to isolate whether the duplication API itself functions before assessing player-specific restrictions.
+3. **Experiment C (Claire Motion Playback & Stalled Frame Investigation):**
+   - **Empirical Findings (19:01 Test Run):** Successfully targeted Claire's prefab body entity (`0000020C06A72AC8`) via `_G.duo_spawner` without affecting Leon. `changeMotion` accepted Motion IDs 160-162 cleanly with no crashes, but frame remained frozen at `0.00` (`PLAYBACK_STALLED`).
+   - **v1.5 Enhancements:** Complete component inventory of Claire's prefab, queries `get_MotionBankAsset()`, inspects pause/speed/weight states across Motion and Layer 0 (`get_Pause()`, `get_PlaySpeed()`), tests frame-stepping probe (`set_Frame(12.5)`), and tests playback with explicit unpause (`set_Pause(false)`).
 
 ---
 
@@ -83,11 +84,15 @@ To prevent speculative reflection calls from destabilizing the core companion, [
 The compiled and consolidated scripts are deployed directly to the test sandbox:
 * **Source:** `D:\Gamesregarding\reframework\autorun\`
 * **Target Sandbox:** `D:\Games\RE2_DuoMode_Sandbox\reframework\autorun\`
+* **Telemetry Data:** `reframework/data/duo_mode/animation_lab_session.csv` and `animation_lab_log.txt`
 
 ### In-Game Verification Steps:
 1. Launch `D:\Games\RE2_DuoMode_Sandbox\Resident Evil 2.exe`.
 2. Load an active gameplay save with Leon (e.g. RPD Main Hall).
 3. Press **Insert** to open the REFramework overlay menu.
 4. Under **Script Generated UI**:
-   - **Claire Redfield Controller (Duo Mode):** Use `Spawn Companion` to verify 3D mesh rendering, smooth follow locomotion, elevator parenting, and tactical commands (`T` key / radial menu).
-   - **Open Animation Research Lab Window:** Toggle the standalone research dashboard to test Experiments A, B, and C independently and inspect live diagnostics.
+   - **Claire Redfield Controller (Duo Mode):** Click `Spawn Companion` to verify 3D mesh rendering and baseline follow locomotion.
+   - **Open Animation Research Lab Window:**
+     - **Experiment A:** Click `Run Exp A Deep Probe & Retries` to inspect `standby` overloads and test `standby(1000, ...)`.
+     - **Experiment B:** Click `Run Exp B Control Test` (non-player clone) and `Probe Scene/Folder Duplication`.
+     - **Experiment C:** Click `Inspect Target & Animation Components` to examine Claire's Motion/Layer Pause flags, run `Test Frame-Step Probe`, and test unpaused playback.
