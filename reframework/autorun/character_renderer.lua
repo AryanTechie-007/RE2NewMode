@@ -9,6 +9,7 @@
 ]]
 
 local spawner = {}
+_G.duo_spawner = spawner
 spawner.spawned_entities = {}
 spawner.last_status = "Ready - Standing by (Click button to spawn)"
 spawner.click_count = 0

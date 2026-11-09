@@ -1,15 +1,15 @@
 --[[
     Resident Evil 2: Duo Mode
-    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Edition v1.3)
+    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Edition v1.4)
     File: reframework/autorun/animation_lab.lua
     Author: AryanTechie-007
 
     Purpose:
     Three isolated, safe in-engine reverse-engineering experiments to resolve
     the companion animation blocker with strict, non-optimistic verification:
-      - Experiment A: Native NPC Allocation (SurvivorAssignManager / SurvivorStandbyCatalog)
-      - Experiment B: Character Duplication (via.Scene.duplicateGameObject + verified input disabling + independent transform control + motion blend tree ticking)
-      - Experiment C: Direct Motion Playback (TreeLayer / MotionFsm2 — Dynamic MotionIDs, unswallowed setup validation, Frame Progression & Visual Confirmation)
+      - Experiment A: Native NPC Allocation (SurvivorAssignManager / SurvivorStandbyCatalog + standby casting probe)
+      - Experiment B: Character Duplication (via.Scene.duplicateGameObject with multi-path scene resolution + input disabling)
+      - Experiment C: Direct Motion Playback (TreeLayer / MotionFsm2 — with one-click companion spawn bridge and target isolation)
 
     Strict Verification Rules:
       - Rule 1: No imaginary functionality. No PASS without verified entities, active functioning controllers, and observed behavior.
@@ -18,7 +18,7 @@
 ]]
 
 local lab = {
-    version = "1.3.0-m1-strict",
+    version = "1.4.0-scene-fix",
     window_open = false,
     selected_tab = 1,
     log_buffer = {},
@@ -162,28 +162,112 @@ local function get_player_go(player)
     return go
 end
 
-local function get_current_scene()
+local function get_current_scene(player_go)
+    -- Multi-path resolution for via.Scene in RE Engine:
+    -- In RE2 Remake, player GameObjects typically live inside a via.Folder.
+    local scene = nil
+    local source = nil
+    local folder = nil
+
+    -- Path 1: Folder hierarchy from player GameObject (most reliable in RE2)
+    if player_go then
+        pcall(function() folder = player_go:call("get_Folder") end)
+        if folder then
+            local curr_f = folder
+            while curr_f and not scene do
+                pcall(function() scene = curr_f:call("get_Scene") end)
+                if scene then
+                    source = "player_go:get_Folder():get_Scene()"
+                    break
+                end
+                local parent = nil
+                pcall(function() parent = curr_f:call("get_Parent") end)
+                curr_f = parent
+            end
+        end
+    end
+
+    -- Path 2: Direct get_Scene on player GameObject
+    if not scene and player_go then
+        pcall(function() scene = player_go:call("get_Scene") end)
+        if scene then source = "player_go:get_Scene()" end
+    end
+
+    -- Path 3: via.SceneManager native singleton
     local scene_man = nil
     pcall(function() scene_man = sdk.get_native_singleton("via.SceneManager") end)
-    if not scene_man then return nil end
-    local scene = nil
-    pcall(function() scene = scene_man:call("get_CurrentScene") end)
-    return scene
+    if scene_man then
+        -- 3a. get_CurrentScene
+        if not scene then
+            pcall(function() scene = scene_man:call("get_CurrentScene") end)
+            if scene then source = "SceneManager:get_CurrentScene()" end
+        end
+        -- 3b. get_PrimaryScene
+        if not scene then
+            pcall(function() scene = scene_man:call("get_PrimaryScene") end)
+            if scene then source = "SceneManager:get_PrimaryScene()" end
+        end
+        -- 3c. MainView scene
+        if not scene then
+            pcall(function()
+                local view = scene_man:call("get_MainView")
+                if view then
+                    scene = view:call("get_PrimaryScene") or view:call("get_Scene")
+                    if scene then source = "SceneManager:get_MainView():get_Scene()" end
+                end
+            end)
+        end
+        -- 3d. getScene(0)
+        if not scene then
+            pcall(function()
+                local count = scene_man:call("get_SceneCount") or 0
+                if count and count > 0 then
+                    scene = scene_man:call("getScene", 0)
+                    if scene then source = "SceneManager:getScene(0)" end
+                end
+            end)
+        end
+    end
+
+    -- Path 4: static via.Scene methods
+    if not scene then
+        pcall(function()
+            local sc_td = sdk.find_type_definition("via.Scene")
+            if sc_td then
+                local m = sc_td:get_method("get_CurrentScene()") or sc_td:get_method("get_PrimaryScene()")
+                if m then
+                    scene = m:call(nil)
+                    if scene then source = "via.Scene static method" end
+                end
+            end
+        end)
+    end
+
+    return scene, source, folder
 end
 
 -- Resolves the target actor for animation playback tests (Priority: Claire from character_renderer -> Exp B clone -> Leon)
 local function get_playback_target()
-    -- 1. Check if Claire is spawned by character_renderer.lua
-    if spawner and spawner.spawned_entities and #spawner.spawned_entities > 0 then
-        local body = spawner.spawned_entities[1]
+    -- 1. Check if Claire is spawned by character_renderer.lua (via global bridge _G.duo_spawner or local spawner)
+    local duo = _G.duo_spawner or spawner
+    if duo and duo.spawned_entities and #duo.spawned_entities > 0 then
+        local body = duo.spawned_entities[1]
         if body and body.call then
-            return body, "Claire (character_renderer.lua Body)"
+            local is_v = true
+            pcall(function() is_v = (body:call("get_Valid") == true) end)
+            if is_v then
+                return body, "Claire (character_renderer.lua Prefab Body)"
+            end
         end
     end
 
     -- 2. Check if Exp B clone is active
     if lab.exp_b.clone_entity and lab.exp_b.clone_entity.call then
-        return lab.exp_b.clone_entity, "Test Clone (Experiment B Actor)"
+        local is_v = false
+        pcall(function() is_v = (lab.exp_b.clone_entity:call("get_Valid") == true) end)
+        if is_v then
+            return lab.exp_b.clone_entity, "Test Clone (Experiment B Actor)"
+        end
     end
 
     -- 3. Fallback: Leon
@@ -287,18 +371,102 @@ function lab.run_experiment_a()
         end
     end)
 
-    -- 5. Safe Exploratory Cast Probe
+    -- 5. Safe Exploratory Cast Probe targeting discovered standby method
     local cast_attempted = false
     local returned_obj = nil
+    local standby_result = nil
 
+    -- 5a. Inspect and log Enum values for standby parameters
+    pcall(function()
+        local pt_td = sdk.find_type_definition("app.ropeway.PlayerDefine.PlayerType")
+        if pt_td then
+            lab_log("[Exp A] PlayerDefine.PlayerType enum fields:")
+            for _, f in ipairs(pt_td:get_fields() or {}) do
+                local val = f:get_data(nil)
+                lab_log(string.format("   PlayerType.%s = %s", f:get_name() or "", tostring(val)))
+            end
+        end
+
+        local cr_td = sdk.find_type_definition("app.ropeway.SurvivorAssignManager.CastingReason")
+        if cr_td then
+            lab_log("[Exp A] CastingReason enum fields:")
+            for _, f in ipairs(cr_td:get_fields() or {}) do
+                local val = f:get_data(nil)
+                lab_log(string.format("   CastingReason.%s = %s", f:get_name() or "", tostring(val)))
+            end
+        end
+
+        local om_td = sdk.find_type_definition("app.ropeway.SurvivorAssignManager.OfferMode")
+        if om_td then
+            lab_log("[Exp A] OfferMode enum fields:")
+            for _, f in ipairs(om_td:get_fields() or {}) do
+                local val = f:get_data(nil)
+                lab_log(string.format("   OfferMode.%s = %s", f:get_name() or "", tostring(val)))
+            end
+        end
+
+        local crr_td = sdk.find_type_definition("app.ropeway.SurvivorAssignManager.CastingRequestResult")
+        if crr_td then
+            lab_log("[Exp A] CastingRequestResult enum fields:")
+            for _, f in ipairs(crr_td:get_fields() or {}) do
+                local val = f:get_data(nil)
+                lab_log(string.format("   CastingRequestResult.%s = %s", f:get_name() or "", tostring(val)))
+            end
+        end
+    end)
+
+    -- 5b. Safe exploratory standby invocation on SurvivorAssignManager
     pcall(function()
         local td_sam = sam:get_type_definition()
         if td_sam then
-            local cast_method = td_sam:get_method("requestCast") or td_sam:get_method("cast")
-            if cast_method then
-                lab_log("[Exp A] Attempting invocation of " .. format_method_sig(cast_method))
-                cast_attempted = true
-                pcall(function() returned_obj = cast_method:call(sam, 1) end)
+            for _, m in ipairs(td_sam:get_methods() or {}) do
+                if m:get_name() == "standby" then
+                    local ptypes = m:get_param_types() or {}
+                    if #ptypes == 3 then
+                        local sig = format_method_sig(m)
+                        lab_log("[Exp A] Invoking candidate standby method: " .. sig)
+                        cast_attempted = true
+                        -- Test with Claire (PlayerType.PL1000 = 1), Reason=0, Mode=0
+                        local ok, res = pcall(function() return m:call(sam, 1, 0, 0) end)
+                        standby_result = res
+                        lab_log(string.format("[Exp A] standby(1, 0, 0) returned: ok=%s, result=%s", tostring(ok), tostring(res)))
+                        break
+                    end
+                end
+            end
+        end
+    end)
+
+    -- 5c. Inspect SurvivorManager singleton for casting execution
+    pcall(function()
+        local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
+        if sm then
+            lab_log("[Exp A] SurvivorManager singleton present: " .. tostring(sm))
+            local in_c = sm:call("inCasting")
+            lab_log("   SurvivorManager:inCasting() = " .. tostring(in_c))
+            local req = sm:call("get_ExecCastingRequest")
+            lab_log("   SurvivorManager:get_ExecCastingRequest() = " .. tostring(req))
+            if in_c == false and req then
+                lab_log("   SurvivorManager has pending request. Attempting applyCastingRequest()...")
+                sm:call("applyCastingRequest")
+            end
+        end
+    end)
+
+    -- 5d. Search for newly cast Survivor GameObject in scene
+    pcall(function()
+        local go_td = sdk.find_type_definition("via.GameObject")
+        if go_td then
+            local find_m = go_td:get_method("find(System.String)")
+            if find_m then
+                for _, target_name in ipairs({"pl1000", "pl1000_body", "survivor", "Claire"}) do
+                    local found_go = find_m:call(nil, target_name)
+                    if found_go then
+                        lab_log("[Exp A] Discovered candidate GameObject in scene: '" .. target_name .. "' -> " .. tostring(found_go))
+                        returned_obj = found_go
+                        break
+                    end
+                end
             end
         end
     end)
@@ -418,31 +586,43 @@ function lab.run_experiment_b()
         return
     end
 
-    local cur_scene = get_current_scene()
-    if not cur_scene then
-        pcall(function() cur_scene = player_go:call("get_Scene") end)
-    end
+    local cur_scene, scene_source, cur_folder = get_current_scene(player_go)
 
     if not cur_scene then
         lab.exp_b.status = "FAILED"
-        lab.exp_b.last_result = "FAIL: via.Scene could not be retrieved from player."
+        lab.exp_b.last_result = "FAIL: via.Scene could not be retrieved from player (checked folder hierarchy, SceneManager views, and static methods)."
         lab_log("[Exp B] " .. lab.exp_b.last_result)
         return
     end
 
-    lab_log("[Exp B] Active player GameObject: " .. tostring(player_go))
-    lab_log("[Exp B] Target Scene: " .. tostring(cur_scene))
+    lab_log(string.format("[Exp B] Active player GameObject: %s", tostring(player_go)))
+    lab_log(string.format("[Exp B] Target Scene: %s (Source: %s)", tostring(cur_scene), tostring(scene_source)))
+    if cur_folder then
+        lab_log(string.format("[Exp B] Player Folder: %s", tostring(cur_folder)))
+    end
 
     -- 1. Perform Duplication
     local clone = nil
     pcall(function() clone = cur_scene:call("duplicateGameObject(via.GameObject)", player_go) end)
+    if not clone and cur_folder then
+        pcall(function() clone = cur_scene:call("duplicateGameObject(via.GameObject, via.Folder)", player_go, cur_folder) end)
+    end
     if not clone then
         pcall(function() clone = cur_scene:call("duplicateGameObject", player_go) end)
+    end
+    if not clone and cur_folder then
+        pcall(function() clone = cur_folder:call("duplicateGameObject", player_go) end)
+    end
+    if not clone then
+        local sm = sdk.get_native_singleton("via.SceneManager")
+        if sm then
+            pcall(function() clone = sm:call("duplicateGameObject", player_go) end)
+        end
     end
 
     if not clone then
         lab.exp_b.status = "FAILED"
-        lab.exp_b.last_result = "FAIL: duplicateGameObject returned nil."
+        lab.exp_b.last_result = "FAIL: duplicateGameObject returned nil across all tested Scene/Folder signatures."
         lab_log("[Exp B] " .. lab.exp_b.last_result)
         return
     end
@@ -562,7 +742,9 @@ function lab.cleanup_experiment_b()
     end
 
     local clone = lab.exp_b.clone_entity
-    local cur_scene = get_current_scene()
+    local player = get_active_player()
+    local player_go = get_player_go(player)
+    local cur_scene = get_current_scene(player_go)
 
     pcall(function()
         clone:call("set_DrawSelf", false)
@@ -992,7 +1174,32 @@ end
 
 local function draw_lab_ui()
     imgui.text_colored("=== RE2 DUO MODE — ANIMATION RESEARCH LAB ===", 0.3, 0.9, 1.0, 1.0)
-    imgui.text_colored("Milestone 1: In-Engine Reverse Engineering (Rigorous Edition v1.3)", 0.7, 0.7, 0.7, 1.0)
+    imgui.text_colored("Milestone 1: In-Engine Reverse Engineering (Rigorous Edition v1.4)", 0.7, 0.7, 0.7, 1.0)
+    imgui.separator()
+
+    -- Quick Companion Control Bridge (character_renderer.lua bridge)
+    local duo = _G.duo_spawner or spawner
+    local claire_body = (duo and duo.spawned_entities and #duo.spawned_entities > 0 and duo.spawned_entities[1])
+    local claire_valid = false
+    if claire_body and claire_body.call then
+        pcall(function() claire_valid = (claire_body:call("get_Valid") == true) end)
+    end
+
+    if claire_valid then
+        imgui.text_colored("Claire Companion: SPAWNED & ACTIVE IN SCENE (Target for Exp C)", 0.2, 1.0, 0.4, 1.0)
+        imgui.same_line()
+        if imgui.button("Despawn Claire##btn_bridge_despawn") then
+            if duo and duo.execute_despawn then duo.execute_despawn() end
+        end
+    else
+        imgui.text_colored("Claire Companion: NOT SPAWNED", 1.0, 0.6, 0.2, 1.0)
+        imgui.same_line()
+        if imgui.button(">>> SPAWN CLAIRE IN FRONT OF LEON <<<##btn_bridge_spawn") then
+            if duo and duo.start_spawn then
+                duo.start_spawn("full")
+            end
+        end
+    end
     imgui.separator()
 
     -- Navigation Tabs
@@ -1111,7 +1318,15 @@ local function draw_lab_ui()
             tostring(lab.exp_c.leon_active_bid), tostring(lab.exp_c.leon_active_mid), lab.exp_c.leon_frame))
 
         imgui.separator()
+        local cur_target_obj, cur_target_name = get_playback_target()
+        lab.exp_c.target_name = cur_target_name
+
         imgui.text_colored("Controlled Playback Testing (Target: " .. tostring(lab.exp_c.target_name) .. "):", 1.0, 0.8, 0.2, 1.0)
+        if string.find(tostring(lab.exp_c.target_name), "Leon") then
+            imgui.text_colored("[!] CAUTION: Targeting Leon (Player Actor). Any stick/keyboard movement will immediately revert this animation back to player locomotion. Use 'SPAWN CLAIRE' above to test on companion!", 1.0, 0.4, 0.2, 1.0)
+        elseif string.find(tostring(lab.exp_c.target_name), "Claire") then
+            imgui.text_colored("[OK] Targeting Claire Companion. Animation will play independently without player movement interference.", 0.2, 1.0, 0.4, 1.0)
+        end
         
         -- Primary recommended test: Play the dynamically confirmed active Leon motion ID!
         if lab.exp_c.leon_active_mid > 0 then
