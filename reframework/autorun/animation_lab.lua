@@ -1,6 +1,6 @@
 --[[
     Resident Evil 2: Duo Mode
-    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Edition v1.2)
+    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Edition v1.3)
     File: reframework/autorun/animation_lab.lua
     Author: AryanTechie-007
 
@@ -8,17 +8,17 @@
     Three isolated, safe in-engine reverse-engineering experiments to resolve
     the companion animation blocker with strict, non-optimistic verification:
       - Experiment A: Native NPC Allocation (SurvivorAssignManager / SurvivorStandbyCatalog)
-      - Experiment B: Character Duplication (via.Scene.duplicateGameObject + verified input disabling + independent transform control)
-      - Experiment C: Direct Motion Playback (TreeLayer / MotionFsm2 — Dynamic MotionIDs, Frame Progression & Visual Confirmation)
+      - Experiment B: Character Duplication (via.Scene.duplicateGameObject + verified input disabling + independent transform control + motion blend tree ticking)
+      - Experiment C: Direct Motion Playback (TreeLayer / MotionFsm2 — Dynamic MotionIDs, unswallowed setup validation, Frame Progression & Visual Confirmation)
 
     Strict Verification Rules:
-      - Rule 1: No imaginary functionality. No PASS without verified entities, active controllers, and actual observed behavior.
+      - Rule 1: No imaginary functionality. No PASS without verified entities, active functioning controllers, and observed behavior.
       - Rule 2: No speculative RE Engine APIs in production.
       - Rule 3: Single confirmed destruction route without double-free risks; unverified cleanups retain references.
 ]]
 
 local lab = {
-    version = "1.2.0-m1-strict",
+    version = "1.3.0-m1-strict",
     window_open = false,
     selected_tab = 1,
     log_buffer = {},
@@ -31,9 +31,12 @@ local lab = {
         types_resolved = {},
         casting_methods = {},
         returned_actor = nil,
+        actor_valid = false,
         has_motion = false,
         has_motion_fsm2 = false,
         has_survivor_motion = false,
+        motion_active = false,
+        layer_count = 0,
         last_result = "Standing by. Click 'Run Experiment A Probe' to inspect Native NPC Casting.",
     },
 
@@ -199,15 +202,18 @@ end
 
 function lab.run_experiment_a()
     lab_log("================================================================")
-    lab_log("STARTING EXPERIMENT A: Native NPC Allocation Probe (Strict Evaluation)")
+    lab_log("STARTING EXPERIMENT A: Native NPC Allocation Probe (Strict Evaluation v1.3)")
     lab_log("================================================================")
     lab.exp_a.status = "RUNNING"
     lab.exp_a.types_resolved = {}
     lab.exp_a.casting_methods = {}
     lab.exp_a.returned_actor = nil
+    lab.exp_a.actor_valid = false
     lab.exp_a.has_motion = false
     lab.exp_a.has_motion_fsm2 = false
     lab.exp_a.has_survivor_motion = false
+    lab.exp_a.motion_active = false
+    lab.exp_a.layer_count = 0
 
     -- 1. Probe Engine Types
     local candidate_types = {
@@ -297,18 +303,37 @@ function lab.run_experiment_a()
         end
     end)
 
-    -- 6. Strict Evidence Evaluation
+    -- 6. Strict Evidence Evaluation (Actor validity + Functioning controller verification)
     if cast_attempted and returned_obj then
         lab.exp_a.returned_actor = returned_obj
-        lab_log("[Exp A] Cast probe returned entity: " .. tostring(returned_obj))
+        lab_log("[Exp A] Cast probe returned entity pointer: " .. tostring(returned_obj))
         
+        local actor_valid = false
+        pcall(function() actor_valid = (returned_obj:call("get_Valid") == true) end)
+        lab.exp_a.actor_valid = actor_valid
+
         local has_mot = false
         local has_fsm2 = false
         local has_surv_mot = false
+        local motion_active = false
+        local layer_count = 0
+        local active_speed = 0.0
 
         pcall(function()
             local c_mot = returned_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
             has_mot = (c_mot ~= nil)
+            if c_mot then
+                layer_count = c_mot:call("getLayerCount") or 0
+                local is_play = c_mot:call("get_Play")
+                local spd = c_mot:call("get_PlaySpeed") or 0.0
+                local l0 = c_mot:call("getLayer", 0)
+                local l0_play = l0 and l0:call("get_Play")
+                local l0_spd = l0 and l0:call("get_Speed") or 0.0
+                if layer_count > 0 and (is_play == true or l0_play == true) and (spd > 0 or l0_spd > 0) then
+                    motion_active = true
+                    active_speed = math.max(spd, l0_spd)
+                end
+            end
             local c_fsm = returned_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2"))
             has_fsm2 = (c_fsm ~= nil)
             local c_sm = returned_obj:call("getComponent(System.Type)", sdk.typeof("app.ropeway.survivor.SurvivorMotionController"))
@@ -318,15 +343,22 @@ function lab.run_experiment_a()
         lab.exp_a.has_motion = has_mot
         lab.exp_a.has_motion_fsm2 = has_fsm2
         lab.exp_a.has_survivor_motion = has_surv_mot
+        lab.exp_a.motion_active = motion_active
+        lab.exp_a.layer_count = layer_count
 
-        -- Strict criteria: PASS requires valid actor AND active motion controllers
-        if has_mot and (has_fsm2 or has_surv_mot) then
+        -- Strict criteria: PASS requires valid actor AND verified active functioning animation controllers
+        if actor_valid and has_mot and (has_fsm2 or has_surv_mot) and motion_active then
             lab.exp_a.status = "PASS"
-            lab.exp_a.last_result = "PASS: Fully animated Native NPC instantiated! Motion and MotionFsm2/SurvivorMotion verified."
+            lab.exp_a.last_result = string.format("PASS: Native NPC instantiated with active animation controllers (Valid=true, Layers=%d, PlaySpeed=%.2f)!",
+                layer_count, active_speed)
+        elseif actor_valid and (has_mot or has_fsm2 or has_surv_mot) then
+            lab.exp_a.status = "PARTIAL"
+            lab.exp_a.last_result = string.format("PARTIAL: Actor returned (Valid=true, Motion=%s, Fsm2=%s, SurvMot=%s), but controller activity/layers unconfirmed (Active=%s, Layers=%d).",
+                tostring(has_mot), tostring(has_fsm2), tostring(has_surv_mot), tostring(motion_active), layer_count)
         else
             lab.exp_a.status = "PARTIAL"
-            lab.exp_a.last_result = string.format("PARTIAL: Actor returned, but animation controller missing (Motion=%s, MotionFsm2=%s, SurvivorMotion=%s).",
-                tostring(has_mot), tostring(has_fsm2), tostring(has_surv_mot))
+            lab.exp_a.last_result = string.format("PARTIAL: Object returned (%s, Valid=%s), but lacks required active animation controllers.",
+                tostring(returned_obj), tostring(actor_valid))
         end
     else
         lab.exp_a.status = "UNVERIFIED"
@@ -347,19 +379,26 @@ local function update_exp_b_verdict()
         if c == "via.motion.Motion" then has_motion = true end
     end
 
-    if lab.exp_b.clone_entity and lab.exp_b.input_stripped and lab.exp_b.independent_transform_control and has_motion then
+    -- Strict criteria: PASS requires valid clone, verified input disabling, independent transform control, intact Motion, AND verified motion ticking
+    if lab.exp_b.clone_entity 
+        and lab.exp_b.input_stripped 
+        and lab.exp_b.input_verified_disabled 
+        and lab.exp_b.independent_transform_control 
+        and has_motion 
+        and lab.exp_b.motion_ticking then
+        
         lab.exp_b.status = "PASS"
-        lab.exp_b.last_result = string.format("PASS: Clone active (%d components). Inputs verified stripped, independent transform control verified over time, Motion intact.", #lab.exp_b.surviving_components)
+        lab.exp_b.last_result = string.format("PASS: Clone active (%d components). Inputs disabled, independent transform control verified, and Motion blend tree ticking verified.", #lab.exp_b.surviving_components)
     elseif lab.exp_b.clone_entity then
         lab.exp_b.status = "PARTIAL"
-        lab.exp_b.last_result = string.format("PARTIAL: Clone spawned (%d components), verification in progress (InputDisabled=%s, IndependentTransform=%s, MotionTicking=%s).",
+        lab.exp_b.last_result = string.format("PARTIAL: Clone spawned (%d components), verification pending (InputDisabled=%s, TransformControl=%s, MotionTicking=%s).",
             #lab.exp_b.surviving_components, tostring(lab.exp_b.input_verified_disabled), tostring(lab.exp_b.independent_transform_control), tostring(lab.exp_b.motion_ticking))
     end
 end
 
 function lab.run_experiment_b()
     lab_log("================================================================")
-    lab_log("STARTING EXPERIMENT B: Character Duplication Probe (Rigorous Evaluation)")
+    lab_log("STARTING EXPERIMENT B: Character Duplication Probe (Rigorous Evaluation v1.3)")
     lab_log("================================================================")
     lab.exp_b.status = "RUNNING"
     lab.exp_b.surviving_components = {}
@@ -470,15 +509,14 @@ function lab.run_experiment_b()
         end
     end)
 
-    -- CRITICAL FIX: input_stripped is ONLY true if components were found AND ALL verified disabled!
     if found_input_comps > 0 and verified_disabled == found_input_comps then
         lab.exp_b.input_stripped = true
         lab.exp_b.input_verified_disabled = true
         lab_log(string.format("[Exp B] Input stripping verified! %d/%d input components found and confirmed disabled.", verified_disabled, found_input_comps))
     elseif found_input_comps > 0 then
-        lab.exp_b.input_stripped = false -- Fixed: Remains FALSE because verification failed
+        lab.exp_b.input_stripped = false
         lab.exp_b.input_verified_disabled = false
-        lab_log(string.format("[Exp B] FAILED: %d input components found, but only %d verified disabled. Flag remains false.", found_input_comps, verified_disabled))
+        lab_log(string.format("[Exp B] FAILED: %d input components found, but only %d verified disabled. Flags remain false.", found_input_comps, verified_disabled))
     else
         lab.exp_b.input_stripped = false
         lab.exp_b.input_verified_disabled = false
@@ -569,7 +607,6 @@ function lab.cleanup_experiment_b()
         lab.exp_b.status = "CLEANED_UP"
         lab.exp_b.last_result = lab.exp_b.cleanup_status
     else
-        -- CRITICAL FIX: Retain reference and flag CLEANUP_UNVERIFIED if invalidity cannot be proved!
         lab.exp_b.cleanup_status = "CLEANUP_UNVERIFIED (Entity still reports valid or check failed; reference retained)"
         lab_log("[Exp B] WARNING: " .. lab.exp_b.cleanup_status)
         lab.exp_b.status = "CLEANUP_FAILED"
@@ -579,7 +616,7 @@ end
 
 -- =========================================================================
 -- EXPERIMENT C: Direct Motion Playback & Layer Probe
--- (Separating Inspection from Playback & Requiring Frame Progression + Visual Confirmation)
+-- (Separating Inspection from Playback & Unswallowed Setup Validation)
 -- =========================================================================
 
 -- Step 1: Inspection of Leon's Motion Bank Asset & Layers
@@ -647,7 +684,6 @@ function lab.run_experiment_c_inspect()
         end)
     end
 
-    -- Add the dynamically verified active Leon motion ID as the primary candidate!
     lab.exp_c.discovered_motions = {
         { id = lab.exp_c.leon_active_mid, name = string.format("Currently Active Leon Layer 0 Motion (VERIFIED in scene)", lab.exp_c.leon_active_mid), bank = lab.exp_c.leon_active_bid, is_active = true },
         { id = 160, name = "Stance / Idle (Standard Pistol - Provisional Candidate)", bank = 1, is_active = false },
@@ -663,7 +699,7 @@ function lab.run_experiment_c_inspect()
     lab_log("================================================================")
 end
 
--- Step 2: Controlled Motion Playback Test with Observable Frame Progression
+-- Step 2: Controlled Motion Playback Test with Unswallowed Setup Validation & Frame Progression
 function lab.run_experiment_c_playback(target_mid, target_bid)
     lab_log("================================================================")
     lab_log(string.format("STARTING EXPERIMENT C (Step 2): Controlled Playback Test (MotionID: %d, BankID: %d)", target_mid, target_bid))
@@ -695,29 +731,62 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
         return
     end
 
-    -- If target has no bank asset, attempt to link Leon's bank asset with verification
-    local bank_linked = true
-    pcall(function()
-        local cur_asset = t_mot:call("get_MotionBankAsset")
-        if not cur_asset and lab.exp_c.leon_bank_asset then
-            t_mot:call("set_MotionBankAsset", lab.exp_c.leon_bank_asset)
-            t_mot:call("setupMotionBank")
-            
-            -- Verify bank asset was actually assigned and is non-nil
-            local verified_asset = t_mot:call("get_MotionBankAsset")
-            if not verified_asset then
-                bank_linked = false
-            else
-                lab_log("[Exp C] Assigned Leon's MotionBankAsset to target and verified non-nil.")
-            end
+    -- Check existing MotionBankAsset
+    local cur_asset = nil
+    local ok_asset, res_asset = pcall(function() return t_mot:call("get_MotionBankAsset") end)
+    if ok_asset then cur_asset = res_asset end
+
+    -- Explicit unswallowed bank setup validation
+    if not cur_asset then
+        if not lab.exp_c.leon_bank_asset then
+            lab.exp_c.playback_status = "PLAYBACK_FAILED"
+            lab.exp_c.last_result = "FAIL: Target has no MotionBankAsset and Leon's MotionBankAsset is nil. Run inspection first."
+            lab_log("[Exp C] " .. lab.exp_c.last_result)
+            return
         end
+
+        -- Step A: set_MotionBankAsset with explicit pcall verification
+        local ok_set, err_set = pcall(function()
+            t_mot:call("set_MotionBankAsset", lab.exp_c.leon_bank_asset)
+        end)
+        if not ok_set then
+            lab.exp_c.playback_status = "PLAYBACK_FAILED"
+            lab.exp_c.last_result = string.format("FAIL: set_MotionBankAsset threw exception: %s", tostring(err_set))
+            lab_log("[Exp C] " .. lab.exp_c.last_result)
+            return
+        end
+
+        -- Step B: setupMotionBank with explicit pcall verification
+        local ok_setup, err_setup = pcall(function()
+            t_mot:call("setupMotionBank")
+        end)
+        if not ok_setup then
+            lab.exp_c.playback_status = "PLAYBACK_FAILED"
+            lab.exp_c.last_result = string.format("FAIL: setupMotionBank threw exception: %s", tostring(err_setup))
+            lab_log("[Exp C] " .. lab.exp_c.last_result)
+            return
+        end
+
+        -- Step C: Verify assigned asset after setup
+        local verified_asset = nil
+        local ok_verify = pcall(function() verified_asset = t_mot:call("get_MotionBankAsset") end)
+        if not ok_verify or not verified_asset then
+            lab.exp_c.playback_status = "PLAYBACK_FAILED"
+            lab.exp_c.last_result = "FAIL: MotionBankAsset verified nil after setupMotionBank."
+            lab_log("[Exp C] " .. lab.exp_c.last_result)
+            return
+        end
+        lab_log("[Exp C] Successfully assigned Leon's MotionBankAsset to target and verified non-nil.")
+    end
+
+    -- Ensure Play and PlaySpeed with explicit error checking
+    local ok_play, err_play = pcall(function()
         t_mot:call("set_Play", true)
         t_mot:call("set_PlaySpeed", 1.0)
     end)
-
-    if not bank_linked then
+    if not ok_play then
         lab.exp_c.playback_status = "PLAYBACK_FAILED"
-        lab.exp_c.last_result = "FAIL: Failed to assign MotionBankAsset to target actor."
+        lab.exp_c.last_result = string.format("FAIL: set_Play/set_PlaySpeed threw exception: %s", tostring(err_play))
         lab_log("[Exp C] " .. lab.exp_c.last_result)
         return
     end
@@ -798,7 +867,11 @@ local function update_lab_telemetry()
                     table.insert(history, frm)
                     if #history > 30 then table.remove(history, 1) end
                     if #history >= 10 and history[#history] ~= history[1] then
-                        lab.exp_b.motion_ticking = true
+                        if not lab.exp_b.motion_ticking then
+                            lab.exp_b.motion_ticking = true
+                            lab_log("[Exp B] Motion blend tree ticking confirmed! Frame progressing.")
+                            update_exp_b_verdict()
+                        end
                     end
                 end
             end
@@ -857,32 +930,30 @@ local function update_lab_telemetry()
         end
     end
 
-    -- 2. Exp C Playback Frame Progression Monitor with continuous target & layer validity verification
+    -- 2. Exp C Playback Frame Progression Monitor with continuous strict actor & layer validity verification
     local pm = lab.exp_c.playback_monitor
     if pm and pm.active and pm.target_obj then
-        -- Verify target actor validity
-        local target_valid = false
-        pcall(function() target_valid = pm.target_obj:call("get_Valid") end)
-        if target_valid == false then
+        -- Strict actor validity check (treat unreadable or false as failure)
+        local ok_val, is_valid = pcall(function() return pm.target_obj:call("get_Valid") end)
+        if not ok_val or is_valid ~= true then
             pm.active = false
             lab.exp_c.playback_status = "PLAYBACK_FAILED"
-            lab.exp_c.last_result = "FAIL: Target actor became invalid during playback monitoring."
+            lab.exp_c.last_result = string.format("FAIL: Target actor validity check failed (ok=%s, valid=%s). Target unreadable or destroyed.", tostring(ok_val), tostring(is_valid))
             lab_log("[Exp C] " .. lab.exp_c.last_result)
             return
         end
 
-        -- Verify target Motion & Layer 0 validity
-        local t_mot = nil
-        local l0 = nil
-        pcall(function()
-            t_mot = pm.target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
-            l0 = t_mot and t_mot:call("getLayer", 0)
-        end)
+        -- Strict Motion component & Layer 0 check (treat unreadable or nil as failure)
+        local ok_mot, t_mot = pcall(function() return pm.target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion")) end)
+        local ok_l0, l0 = nil, nil
+        if ok_mot and t_mot then
+            ok_l0, l0 = pcall(function() return t_mot:call("getLayer", 0) end)
+        end
 
-        if not l0 then
+        if not ok_mot or not t_mot or not ok_l0 or not l0 then
             pm.active = false
             lab.exp_c.playback_status = "PLAYBACK_FAILED"
-            lab.exp_c.last_result = "FAIL: Target Motion Layer 0 became unavailable during playback monitoring."
+            lab.exp_c.last_result = "FAIL: Target via.motion.Motion or Layer 0 became unreadable during monitoring."
             lab_log("[Exp C] " .. lab.exp_c.last_result)
             return
         end
@@ -921,7 +992,7 @@ end
 
 local function draw_lab_ui()
     imgui.text_colored("=== RE2 DUO MODE — ANIMATION RESEARCH LAB ===", 0.3, 0.9, 1.0, 1.0)
-    imgui.text_colored("Milestone 1: In-Engine Reverse Engineering (Rigorous Edition v1.2)", 0.7, 0.7, 0.7, 1.0)
+    imgui.text_colored("Milestone 1: In-Engine Reverse Engineering (Rigorous Edition v1.3)", 0.7, 0.7, 0.7, 1.0)
     imgui.separator()
 
     -- Navigation Tabs
@@ -978,10 +1049,12 @@ local function draw_lab_ui()
         imgui.spacing()
         imgui.text("Status: " .. lab.exp_a.status)
         imgui.text("Singleton Detected: " .. tostring(lab.exp_a.singleton_found))
-        imgui.text("Returned Actor: " .. tostring(lab.exp_a.returned_actor ~= nil))
+        imgui.text("Returned Actor Non-Nil: " .. tostring(lab.exp_a.returned_actor ~= nil))
+        imgui.text("Actor Verified Valid (get_Valid==true): " .. tostring(lab.exp_a.actor_valid))
         imgui.text("Has via.motion.Motion: " .. tostring(lab.exp_a.has_motion))
         imgui.text("Has MotionFsm2: " .. tostring(lab.exp_a.has_motion_fsm2))
         imgui.text("Has SurvivorMotionController: " .. tostring(lab.exp_a.has_survivor_motion))
+        imgui.text(string.format("Controller Functioning Active: %s (Layers=%d)", tostring(lab.exp_a.motion_active), lab.exp_a.layer_count))
         imgui.text("Verdict: " .. lab.exp_a.last_result)
 
         imgui.spacing()
