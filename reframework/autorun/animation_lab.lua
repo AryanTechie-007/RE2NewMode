@@ -1,24 +1,24 @@
 --[[
     Resident Evil 2: Duo Mode
-    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Edition)
+    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Edition v1.2)
     File: reframework/autorun/animation_lab.lua
     Author: AryanTechie-007
 
     Purpose:
     Three isolated, safe in-engine reverse-engineering experiments to resolve
-    the companion animation blocker with strict, non-optimistic success criteria:
+    the companion animation blocker with strict, non-optimistic verification:
       - Experiment A: Native NPC Allocation (SurvivorAssignManager / SurvivorStandbyCatalog)
-      - Experiment B: Character Duplication (via.Scene.duplicateGameObject + verified input stripping + dynamic locomotion)
-      - Experiment C: Direct Motion Playback (TreeLayer / MotionFsm2 — Inspection separated from Playback verification)
+      - Experiment B: Character Duplication (via.Scene.duplicateGameObject + verified input disabling + independent transform control)
+      - Experiment C: Direct Motion Playback (TreeLayer / MotionFsm2 — Dynamic MotionIDs, Frame Progression & Visual Confirmation)
 
     Strict Verification Rules:
-      - Rule 1: No imaginary functionality. No PASS without runtime verification of entities and active controllers.
+      - Rule 1: No imaginary functionality. No PASS without verified entities, active controllers, and actual observed behavior.
       - Rule 2: No speculative RE Engine APIs in production.
-      - Rule 3: Single confirmed destruction route without double-free/double-destruction risks.
+      - Rule 3: Single confirmed destruction route without double-free risks; unverified cleanups retain references.
 ]]
 
 local lab = {
-    version = "1.1.0-m1-strict",
+    version = "1.2.0-m1-strict",
     window_open = false,
     selected_tab = 1,
     log_buffer = {},
@@ -39,12 +39,12 @@ local lab = {
 
     -- Experiment B State
     exp_b = {
-        status = "NOT_RUN", -- NOT_RUN | RUNNING | PASS | PARTIAL | FAILED | CLEANED_UP
+        status = "NOT_RUN", -- NOT_RUN | RUNNING | PASS | PARTIAL | FAILED | CLEANED_UP | CLEANUP_FAILED
         clone_entity = nil,
         surviving_components = {},
         input_stripped = false,
         input_verified_disabled = false,
-        independent_locomotion = false,
+        independent_transform_control = false,
         motion_ticking = false,
         clone_frame_history = {},
         cleanup_status = "No test clone instantiated.",
@@ -55,6 +55,8 @@ local lab = {
             target_frames = 60,
             clone_initial_pos = nil,
             leon_initial_pos = nil,
+            max_clone_displacement = 0.0,
+            max_leon_displacement = 0.0,
             clone_moved = false,
             leon_unmoved = false,
             verdict = "NOT_STARTED",
@@ -64,7 +66,8 @@ local lab = {
     -- Experiment C State
     exp_c = {
         inspection_status = "NOT_RUN", -- NOT_RUN | INSPECTION_COMPLETE | INSPECTION_PARTIAL | FAILED
-        playback_status = "NOT_RUN",   -- NOT_RUN | TESTING | PLAYBACK_VERIFIED | PLAYBACK_FAILED | PLAYBACK_STALLED | PLAYBACK_OVERRIDDEN
+        playback_status = "NOT_RUN",   -- NOT_RUN | TESTING | FRAME_PROGRESSION_VERIFIED | PLAYBACK_AND_VISUAL_VERIFIED | PLAYBACK_FAILED | PLAYBACK_STALLED | PLAYBACK_OVERRIDDEN
+        visual_confirmed = false,
         leon_bank_asset = nil,
         leon_layer_count = 0,
         leon_active_mid = 0,
@@ -84,7 +87,7 @@ local lab = {
             start_frame = 0.0,
             current_frame = 0.0,
             ticks_observed = 0,
-            max_ticks = 40,
+            max_ticks = 45,
         }
     }
 }
@@ -344,13 +347,13 @@ local function update_exp_b_verdict()
         if c == "via.motion.Motion" then has_motion = true end
     end
 
-    if lab.exp_b.clone_entity and lab.exp_b.input_verified_disabled and lab.exp_b.independent_locomotion and has_motion then
+    if lab.exp_b.clone_entity and lab.exp_b.input_stripped and lab.exp_b.independent_transform_control and has_motion then
         lab.exp_b.status = "PASS"
-        lab.exp_b.last_result = string.format("PASS: Clone active with %d components intact. Inputs verified stripped, independent locomotion verified over time, Motion intact.", #lab.exp_b.surviving_components)
+        lab.exp_b.last_result = string.format("PASS: Clone active (%d components). Inputs verified stripped, independent transform control verified over time, Motion intact.", #lab.exp_b.surviving_components)
     elseif lab.exp_b.clone_entity then
         lab.exp_b.status = "PARTIAL"
-        lab.exp_b.last_result = string.format("PARTIAL: Clone spawned (%d components), verification in progress (InputDisabled=%s, IndependentLoco=%s, MotionTicking=%s).",
-            #lab.exp_b.surviving_components, tostring(lab.exp_b.input_verified_disabled), tostring(lab.exp_b.independent_locomotion), tostring(lab.exp_b.motion_ticking))
+        lab.exp_b.last_result = string.format("PARTIAL: Clone spawned (%d components), verification in progress (InputDisabled=%s, IndependentTransform=%s, MotionTicking=%s).",
+            #lab.exp_b.surviving_components, tostring(lab.exp_b.input_verified_disabled), tostring(lab.exp_b.independent_transform_control), tostring(lab.exp_b.motion_ticking))
     end
 end
 
@@ -362,7 +365,7 @@ function lab.run_experiment_b()
     lab.exp_b.surviving_components = {}
     lab.exp_b.input_stripped = false
     lab.exp_b.input_verified_disabled = false
-    lab.exp_b.independent_locomotion = false
+    lab.exp_b.independent_transform_control = false
     lab.exp_b.motion_ticking = false
     lab.exp_b.clone_frame_history = {}
     lab.exp_b.cleanup_status = "Test clone active in viewport."
@@ -439,7 +442,7 @@ function lab.run_experiment_b()
         end
     end
 
-    -- 3. Strict Input Stripping & Verification
+    -- 3. Strict Input Stripping & Verification (No false-positive flags)
     local found_input_comps = 0
     local verified_disabled = 0
 
@@ -467,21 +470,22 @@ function lab.run_experiment_b()
         end
     end)
 
+    -- CRITICAL FIX: input_stripped is ONLY true if components were found AND ALL verified disabled!
     if found_input_comps > 0 and verified_disabled == found_input_comps then
         lab.exp_b.input_stripped = true
         lab.exp_b.input_verified_disabled = true
         lab_log(string.format("[Exp B] Input stripping verified! %d/%d input components found and confirmed disabled.", verified_disabled, found_input_comps))
     elseif found_input_comps > 0 then
-        lab.exp_b.input_stripped = true
+        lab.exp_b.input_stripped = false -- Fixed: Remains FALSE because verification failed
         lab.exp_b.input_verified_disabled = false
-        lab_log(string.format("[Exp B] Warning: %d input components found, but only %d verified disabled.", found_input_comps, verified_disabled))
+        lab_log(string.format("[Exp B] FAILED: %d input components found, but only %d verified disabled. Flag remains false.", found_input_comps, verified_disabled))
     else
         lab.exp_b.input_stripped = false
         lab.exp_b.input_verified_disabled = false
         lab_log("[Exp B] Warning: No input receiver components found on cloned actor.")
     end
 
-    -- 4. Initialize Multi-Frame Independent Locomotion Test
+    -- 4. Initialize Multi-Frame Independent Transform Control Test
     pcall(function()
         local p_tf = player_go:call("get_Transform")
         local c_tf = clone:call("get_Transform")
@@ -497,11 +501,13 @@ function lab.run_experiment_b()
                     target_frames = 60,
                     clone_initial_pos = { x = pos.x + 2.0, y = pos.y, z = pos.z },
                     leon_initial_pos = { x = pos.x, y = pos.y, z = pos.z },
+                    max_clone_displacement = 0.0,
+                    max_leon_displacement = 0.0,
                     clone_moved = false,
                     leon_unmoved = false,
-                    verdict = "TESTING_LOCOMOTION_OVER_TIME",
+                    verdict = "TESTING_INDEPENDENT_TRANSFORM_CONTROL",
                 }
-                lab_log("[Exp B] Initiated 60-frame independent locomotion test over time...")
+                lab_log("[Exp B] Initiated 60-frame independent transform control test...")
             end
         end
     end)
@@ -510,7 +516,7 @@ function lab.run_experiment_b()
     lab_log("================================================================")
 end
 
--- Cleanup: Uses ONE confirmed destruction route without double-free risks
+-- Cleanup: Confirms invalidity after both primary and fallback destruction; retains reference if unverified
 function lab.cleanup_experiment_b()
     if not lab.exp_b.clone_entity then
         lab.exp_b.cleanup_status = "No active clone to destroy."
@@ -519,60 +525,61 @@ function lab.cleanup_experiment_b()
 
     local clone = lab.exp_b.clone_entity
     local cur_scene = get_current_scene()
-    local destroyed = false
 
     pcall(function()
         clone:call("set_DrawSelf", false)
         clone:call("set_UpdateSelf", false)
     end)
 
-    -- Confirmed Primary Route: via.Scene.destroyGameObject
+    -- Route 1: via.Scene.destroyGameObject
     if cur_scene then
-        local ok = pcall(function()
-            cur_scene:call("destroyGameObject(via.GameObject)", clone)
-            destroyed = true
-        end)
-        if not ok or not destroyed then
-            pcall(function()
-                cur_scene:call("destroyGameObject", clone)
-                destroyed = true
-            end)
-        end
+        pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", clone) end)
+        pcall(function() cur_scene:call("destroyGameObject", clone) end)
     end
 
-    -- Verify whether destruction succeeded
-    local still_valid = false
-    pcall(function() still_valid = clone:call("get_Valid") end)
+    -- Verify whether Route 1 invalidated the object
+    local is_valid_after_scene = nil
+    pcall(function() is_valid_after_scene = clone:call("get_Valid") end)
 
-    if destroyed and not still_valid then
-        lab.exp_b.cleanup_status = "SUCCESS: Destroyed cleanly via via.Scene.destroyGameObject."
-        lab_log("[Exp B] " .. lab.exp_b.cleanup_status)
+    if is_valid_after_scene == false then
+        lab.exp_b.cleanup_status = "CLEANUP_VERIFIED (Destroyed via via.Scene.destroyGameObject, verified get_Valid==false)"
+        lab_log("[Exp B] Cleanup: " .. lab.exp_b.cleanup_status)
         lab.exp_b.clone_entity = nil
-    elseif still_valid then
-        -- Only attempt fallback static destroy if scene destroy failed and entity remains valid
-        lab_log("[Exp B] Object still valid after scene destroy. Attempting fallback via.GameObject.destroy...")
-        local go_td = sdk.find_type_definition("via.GameObject")
-        local destroy_static = go_td and go_td:get_method("destroy(via.GameObject)")
-        if destroy_static then
-            pcall(function() destroy_static:call(nil, clone) end)
-            lab.exp_b.cleanup_status = "SUCCESS: Destroyed via fallback static via.GameObject.destroy."
-            lab.exp_b.clone_entity = nil
-        else
-            lab.exp_b.cleanup_status = "WARNING: Entity could not be verified destroyed."
-        end
+        lab.exp_b.status = "CLEANED_UP"
+        lab.exp_b.last_result = lab.exp_b.cleanup_status
+        return
+    end
+
+    -- Route 2 (Fallback): static via.GameObject.destroy ONLY if Route 1 did not invalidate
+    lab_log("[Exp B] Scene destroy did not invalidate object. Attempting fallback via.GameObject.destroy...")
+    local go_td = sdk.find_type_definition("via.GameObject")
+    local destroy_static = go_td and go_td:get_method("destroy(via.GameObject)")
+    if destroy_static then
+        pcall(function() destroy_static:call(nil, clone) end)
+    end
+
+    -- Strictly verify invalidity after fallback
+    local is_valid_after_fallback = nil
+    pcall(function() is_valid_after_fallback = clone:call("get_Valid") end)
+
+    if is_valid_after_fallback == false then
+        lab.exp_b.cleanup_status = "CLEANUP_VERIFIED (Destroyed via fallback static via.GameObject.destroy, verified get_Valid==false)"
+        lab_log("[Exp B] Cleanup: " .. lab.exp_b.cleanup_status)
+        lab.exp_b.clone_entity = nil
+        lab.exp_b.status = "CLEANED_UP"
+        lab.exp_b.last_result = lab.exp_b.cleanup_status
     else
-        lab.exp_b.cleanup_status = "SUCCESS: Clone reference cleared and marked invalid."
-        lab.exp_b.clone_entity = nil
+        -- CRITICAL FIX: Retain reference and flag CLEANUP_UNVERIFIED if invalidity cannot be proved!
+        lab.exp_b.cleanup_status = "CLEANUP_UNVERIFIED (Entity still reports valid or check failed; reference retained)"
+        lab_log("[Exp B] WARNING: " .. lab.exp_b.cleanup_status)
+        lab.exp_b.status = "CLEANUP_FAILED"
+        lab.exp_b.last_result = lab.exp_b.cleanup_status
     end
-
-    lab.exp_b.loco_test.active = false
-    lab.exp_b.status = "CLEANED_UP"
-    lab.exp_b.last_result = "Cleaned up: " .. lab.exp_b.cleanup_status
 end
 
 -- =========================================================================
 -- EXPERIMENT C: Direct Motion Playback & Layer Probe
--- (Separating Inspection from Playback Verification)
+-- (Separating Inspection from Playback & Requiring Frame Progression + Visual Confirmation)
 -- =========================================================================
 
 -- Step 1: Inspection of Leon's Motion Bank Asset & Layers
@@ -640,16 +647,18 @@ function lab.run_experiment_c_inspect()
         end)
     end
 
+    -- Add the dynamically verified active Leon motion ID as the primary candidate!
     lab.exp_c.discovered_motions = {
-        { id = 160, name = "Stance / Idle (Standard Pistol)", bank = 1 },
-        { id = 161, name = "Walk Forward (Standard Pistol)", bank = 1 },
-        { id = 162, name = "Jog / Run Forward", bank = 1 },
-        { id = 163, name = "Turn 90 / 180 Transition", bank = 1 },
+        { id = lab.exp_c.leon_active_mid, name = string.format("Currently Active Leon Layer 0 Motion (VERIFIED in scene)", lab.exp_c.leon_active_mid), bank = lab.exp_c.leon_active_bid, is_active = true },
+        { id = 160, name = "Stance / Idle (Standard Pistol - Provisional Candidate)", bank = 1, is_active = false },
+        { id = 161, name = "Walk Forward (Standard Pistol - Provisional Candidate)", bank = 1, is_active = false },
+        { id = 162, name = "Jog / Run Forward (Provisional Candidate)", bank = 1, is_active = false },
+        { id = 163, name = "Turn 90 / 180 Transition (Provisional Candidate)", bank = 1, is_active = false },
     }
 
     lab.exp_c.inspection_status = "INSPECTION_COMPLETE"
-    lab.exp_c.last_result = string.format("INSPECTION_COMPLETE: Leon MotionBankAsset valid (%s). Layer count: %d. Ready for controlled playback test.",
-        tostring(p_asset), lab.exp_c.leon_layer_count)
+    lab.exp_c.last_result = string.format("INSPECTION_COMPLETE: Leon MotionBankAsset valid (%s). Active MotionID=%s, BankID=%s. Ready for playback test.",
+        tostring(p_asset), tostring(lab.exp_c.leon_active_mid), tostring(lab.exp_c.leon_active_bid))
     lab_log("[Exp C] " .. lab.exp_c.last_result)
     lab_log("================================================================")
 end
@@ -660,6 +669,7 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
     lab_log(string.format("STARTING EXPERIMENT C (Step 2): Controlled Playback Test (MotionID: %d, BankID: %d)", target_mid, target_bid))
     lab_log("================================================================")
     lab.exp_c.playback_status = "TESTING"
+    lab.exp_c.visual_confirmed = false
     lab.exp_c.selected_mid = target_mid
     lab.exp_c.selected_bid = target_bid
 
@@ -685,17 +695,32 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
         return
     end
 
-    -- If target has no bank asset, attempt to link Leon's bank asset
+    -- If target has no bank asset, attempt to link Leon's bank asset with verification
+    local bank_linked = true
     pcall(function()
         local cur_asset = t_mot:call("get_MotionBankAsset")
         if not cur_asset and lab.exp_c.leon_bank_asset then
             t_mot:call("set_MotionBankAsset", lab.exp_c.leon_bank_asset)
             t_mot:call("setupMotionBank")
-            lab_log("[Exp C] Assigned Leon's MotionBankAsset to target and called setupMotionBank.")
+            
+            -- Verify bank asset was actually assigned and is non-nil
+            local verified_asset = t_mot:call("get_MotionBankAsset")
+            if not verified_asset then
+                bank_linked = false
+            else
+                lab_log("[Exp C] Assigned Leon's MotionBankAsset to target and verified non-nil.")
+            end
         end
         t_mot:call("set_Play", true)
         t_mot:call("set_PlaySpeed", 1.0)
     end)
+
+    if not bank_linked then
+        lab.exp_c.playback_status = "PLAYBACK_FAILED"
+        lab.exp_c.last_result = "FAIL: Failed to assign MotionBankAsset to target actor."
+        lab_log("[Exp C] " .. lab.exp_c.last_result)
+        return
+    end
 
     -- Query Layer 0
     local l0 = nil
@@ -741,7 +766,7 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
         return
     end
 
-    -- Initiate 40-frame telemetry monitoring to verify actual frame progression
+    -- Initiate 45-frame telemetry monitoring to verify actual frame progression
     lab.exp_c.playback_monitor = {
         active = true,
         target_obj = target_obj,
@@ -750,7 +775,7 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
         start_frame = initial_frame,
         current_frame = initial_frame,
         ticks_observed = 0,
-        max_ticks = 40,
+        max_ticks = 45,
     }
     lab_log(string.format("[Exp C] changeMotion invoked cleanly! Monitoring frame progression from %.2f...", initial_frame))
 end
@@ -760,7 +785,7 @@ end
 -- =========================================================================
 
 local function update_lab_telemetry()
-    -- 1. Exp B Locomotion & Frame Monitoring over time
+    -- 1. Exp B Independent Transform Control & Blend Tree Ticking Monitor
     if lab.exp_b.clone_entity then
         -- Check motion blend tree ticking
         pcall(function()
@@ -779,7 +804,7 @@ local function update_lab_telemetry()
             end
         end)
 
-        -- Multi-frame independent locomotion test
+        -- Multi-frame independent transform control test
         local lt = lab.exp_b.loco_test
         if lt and lt.active then
             local p = get_active_player()
@@ -790,68 +815,101 @@ local function update_lab_telemetry()
             if p_tf and c_tf then
                 lt.current_frame = lt.current_frame + 1
                 
-                -- Translate clone slightly each frame
+                -- Dynamically translate clone transform slightly each frame
                 local offset_x = math.sin(lt.current_frame * 0.1) * 0.6
                 local step_pos = (Vector3f and Vector3f.new and Vector3f.new(lt.clone_initial_pos.x + offset_x, lt.clone_initial_pos.y, lt.clone_initial_pos.z)) 
                                 or { x = lt.clone_initial_pos.x + offset_x, y = lt.clone_initial_pos.y, z = lt.clone_initial_pos.z }
                 c_tf:call("set_Position", step_pos)
 
+                -- Sample current displacement each frame
+                local cur_c = c_tf:call("get_Position")
+                local cur_p = p_tf:call("get_Position")
+                if cur_c and lt.clone_initial_pos then
+                    local c_disp = math.abs(cur_c.x - lt.clone_initial_pos.x)
+                    if c_disp > lt.max_clone_displacement then
+                        lt.max_clone_displacement = c_disp
+                    end
+                end
+                if cur_p and lt.leon_initial_pos then
+                    local p_disp = math.abs(cur_p.x - lt.leon_initial_pos.x) + math.abs(cur_p.z - lt.leon_initial_pos.z)
+                    if p_disp > lt.max_leon_displacement then
+                        lt.max_leon_displacement = p_disp
+                    end
+                end
+
                 if lt.current_frame >= lt.target_frames then
                     lt.active = false
-                    local final_c = c_tf:call("get_Position")
-                    local final_p = p_tf:call("get_Position")
                     
-                    local c_dx = final_c and math.abs(final_c.x - lt.clone_initial_pos.x) or 0.0
-                    local p_dx = final_p and (math.abs(final_p.x - lt.leon_initial_pos.x) + math.abs(final_p.z - lt.leon_initial_pos.z)) or 0.0
-                    
-                    lt.clone_moved = (c_dx > 0.1)
-                    lt.leon_unmoved = (p_dx < 0.25)
+                    lt.clone_moved = (lt.max_clone_displacement > 0.25)
+                    lt.leon_unmoved = (lt.max_leon_displacement < 0.25)
 
                     if lt.clone_moved and lt.leon_unmoved then
-                        lab.exp_b.independent_locomotion = true
-                        lt.verdict = "VERIFIED (Clone translated dynamically over 60 frames; Leon unaffected)"
+                        lab.exp_b.independent_transform_control = true
+                        lt.verdict = "INDEPENDENT_TRANSFORM_CONTROL_VERIFIED (Clone transform translated over 60 frames without affecting Leon. Note: Does not imply autonomous native locomotion controller)"
                     else
-                        lab.exp_b.independent_locomotion = false
-                        lt.verdict = string.format("FAILED (CloneMoved: %s, LeonUnaffected: %s)", tostring(lt.clone_moved), tostring(lt.leon_unmoved))
+                        lab.exp_b.independent_transform_control = false
+                        lt.verdict = string.format("FAILED (MaxCloneMoved: %.2f m, MaxLeonMoved: %.2f m)", lt.max_clone_displacement, lt.max_leon_displacement)
                     end
-                    lab_log("[Exp B] Locomotion Over Time Verdict: " .. lt.verdict)
+                    lab_log("[Exp B] Transform Control Verdict: " .. lt.verdict)
                     update_exp_b_verdict()
                 end
             end
         end
     end
 
-    -- 2. Exp C Playback Frame Progression Monitor
+    -- 2. Exp C Playback Frame Progression Monitor with continuous target & layer validity verification
     local pm = lab.exp_c.playback_monitor
     if pm and pm.active and pm.target_obj then
-        pm.ticks_observed = pm.ticks_observed + 1
-        
+        -- Verify target actor validity
+        local target_valid = false
+        pcall(function() target_valid = pm.target_obj:call("get_Valid") end)
+        if target_valid == false then
+            pm.active = false
+            lab.exp_c.playback_status = "PLAYBACK_FAILED"
+            lab.exp_c.last_result = "FAIL: Target actor became invalid during playback monitoring."
+            lab_log("[Exp C] " .. lab.exp_c.last_result)
+            return
+        end
+
+        -- Verify target Motion & Layer 0 validity
+        local t_mot = nil
+        local l0 = nil
         pcall(function()
-            local t_mot = pm.target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
-            local l0 = t_mot and t_mot:call("getLayer", 0)
-            if l0 then
-                pm.current_frame = l0:call("get_Frame") or 0.0
-                local mid = l0:call("get_MotionID") or 0
+            t_mot = pm.target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+            l0 = t_mot and t_mot:call("getLayer", 0)
+        end)
+
+        if not l0 then
+            pm.active = false
+            lab.exp_c.playback_status = "PLAYBACK_FAILED"
+            lab.exp_c.last_result = "FAIL: Target Motion Layer 0 became unavailable during playback monitoring."
+            lab_log("[Exp C] " .. lab.exp_c.last_result)
+            return
+        end
+
+        pm.ticks_observed = pm.ticks_observed + 1
+        pcall(function()
+            pm.current_frame = l0:call("get_Frame") or 0.0
+            local mid = l0:call("get_MotionID") or 0
+            
+            if pm.ticks_observed >= pm.max_ticks then
+                pm.active = false
+                local frame_advanced = (pm.current_frame > pm.start_frame) or (pm.current_frame < pm.start_frame and pm.start_frame > 15.0) -- looped
                 
-                if pm.ticks_observed >= pm.max_ticks then
-                    pm.active = false
-                    local frame_advanced = (pm.current_frame > pm.start_frame) or (pm.current_frame < pm.start_frame and pm.start_frame > 20.0) -- looped
-                    
-                    if mid == pm.target_mid and frame_advanced then
-                        lab.exp_c.playback_status = "PLAYBACK_VERIFIED"
-                        lab.exp_c.last_result = string.format("PASS: PLAYBACK_VERIFIED! MotionID %d progressing (Frame %.1f -> %.1f) without exception.",
-                            pm.target_mid, pm.start_frame, pm.current_frame)
-                    elseif mid == pm.target_mid and not frame_advanced then
-                        lab.exp_c.playback_status = "PLAYBACK_STALLED"
-                        lab.exp_c.last_result = string.format("PARTIAL: MotionID %d assigned, but frame is stationary at %.1f (PlaySpeed=0 or animation paused).",
-                            pm.target_mid, pm.current_frame)
-                    else
-                        lab.exp_c.playback_status = "PLAYBACK_OVERRIDDEN"
-                        lab.exp_c.last_result = string.format("PARTIAL: changeMotion executed, but native motion graph immediately reverted MotionID %d to %d.",
-                            pm.target_mid, mid)
-                    end
-                    lab_log("[Exp C] " .. lab.exp_c.last_result)
+                if mid == pm.target_mid and frame_advanced then
+                    lab.exp_c.playback_status = "FRAME_PROGRESSION_VERIFIED"
+                    lab.exp_c.last_result = string.format("FRAME_PROGRESSION_VERIFIED: MotionID %d on Bank %d progressed (%.1f -> %.1f, +%d ticks). Pending visual confirmation in viewport.",
+                        pm.target_mid, pm.target_bid, pm.start_frame, pm.current_frame, pm.ticks_observed)
+                elseif mid == pm.target_mid and not frame_advanced then
+                    lab.exp_c.playback_status = "PLAYBACK_STALLED"
+                    lab.exp_c.last_result = string.format("PARTIAL: MotionID %d assigned, but frame remained stationary at %.1f (PlaySpeed=0 or animation paused).",
+                        pm.target_mid, pm.current_frame)
+                else
+                    lab.exp_c.playback_status = "PLAYBACK_OVERRIDDEN"
+                    lab.exp_c.last_result = string.format("PARTIAL: changeMotion executed, but native motion graph immediately reverted MotionID %d to %d.",
+                        pm.target_mid, mid)
                 end
+                lab_log("[Exp C] " .. lab.exp_c.last_result)
             end
         end)
     end
@@ -863,7 +921,7 @@ end
 
 local function draw_lab_ui()
     imgui.text_colored("=== RE2 DUO MODE — ANIMATION RESEARCH LAB ===", 0.3, 0.9, 1.0, 1.0)
-    imgui.text_colored("Milestone 1: Isolated In-Engine Reverse Engineering (Rigorous V1.1)", 0.7, 0.7, 0.7, 1.0)
+    imgui.text_colored("Milestone 1: In-Engine Reverse Engineering (Rigorous Edition v1.2)", 0.7, 0.7, 0.7, 1.0)
     imgui.separator()
 
     -- Navigation Tabs
@@ -900,7 +958,9 @@ local function draw_lab_ui()
         imgui.spacing()
 
         -- Exp C Summary
-        local col_c = (lab.exp_c.playback_status == "PLAYBACK_VERIFIED" and {0.2, 1.0, 0.4}) or (lab.exp_c.playback_status == "PLAYBACK_STALLED" and {1.0, 0.8, 0.2}) or {0.8, 0.8, 0.8}
+        local col_c = (lab.exp_c.playback_status == "PLAYBACK_AND_VISUAL_VERIFIED" and {0.2, 1.0, 0.4}) 
+                   or (lab.exp_c.playback_status == "FRAME_PROGRESSION_VERIFIED" and {0.2, 0.9, 1.0}) 
+                   or (lab.exp_c.playback_status == "PLAYBACK_STALLED" and {1.0, 0.8, 0.2}) or {0.8, 0.8, 0.8}
         imgui.text_colored("Experiment C: Direct Motion Playback (TreeLayer / MotionFsm2)", col_c[1], col_c[2], col_c[3], 1.0)
         imgui.text("  Inspection: " .. lab.exp_c.inspection_status .. " | Playback: " .. lab.exp_c.playback_status)
         imgui.text("  Result: " .. lab.exp_c.last_result)
@@ -947,10 +1007,10 @@ local function draw_lab_ui()
         imgui.spacing()
         imgui.text("Status: " .. lab.exp_b.status)
         imgui.text("Clone Active: " .. tostring(lab.exp_b.clone_entity ~= nil))
-        imgui.text("Input Components Found: " .. tostring(lab.exp_b.input_stripped))
+        imgui.text("Input Components Found & Disabled: " .. tostring(lab.exp_b.input_stripped))
         imgui.text("Input Verified Disabled (get_Valid==false): " .. tostring(lab.exp_b.input_verified_disabled))
-        imgui.text("Independent Locomotion (Multi-Frame): " .. tostring(lab.exp_b.independent_locomotion))
-        imgui.text("Locomotion Test Detail: " .. tostring(lab.exp_b.loco_test.verdict))
+        imgui.text("Independent Transform Control (60 Frames): " .. tostring(lab.exp_b.independent_transform_control))
+        imgui.text("Transform Test Verdict: " .. tostring(lab.exp_b.loco_test.verdict))
         imgui.text("Motion Blend Tree Ticking: " .. tostring(lab.exp_b.motion_ticking))
         imgui.text("Cleanup Status: " .. tostring(lab.exp_b.cleanup_status))
         imgui.text("Verdict: " .. lab.exp_b.last_result)
@@ -974,12 +1034,21 @@ local function draw_lab_ui()
         imgui.spacing()
         imgui.text("Inspection Status: " .. lab.exp_c.inspection_status)
         imgui.text("Leon Bank Asset Present: " .. tostring(lab.exp_c.leon_bank_asset ~= nil))
-        imgui.text(string.format("Leon Layer[0]: BankID=%s, MotionID=%s (Frame=%.1f)",
+        imgui.text(string.format("Leon Layer[0]: BankID=%s, Active MotionID=%s (Frame=%.1f)",
             tostring(lab.exp_c.leon_active_bid), tostring(lab.exp_c.leon_active_mid), lab.exp_c.leon_frame))
 
         imgui.separator()
         imgui.text_colored("Controlled Playback Testing (Target: " .. tostring(lab.exp_c.target_name) .. "):", 1.0, 0.8, 0.2, 1.0)
         
+        -- Primary recommended test: Play the dynamically confirmed active Leon motion ID!
+        if lab.exp_c.leon_active_mid > 0 then
+            local active_btn_label = string.format("Play Active Leon Motion (ID %d, Bank %d) [VERIFIED IN SCENE]##btn_play_active", lab.exp_c.leon_active_mid, lab.exp_c.leon_active_bid)
+            if imgui.button(active_btn_label) then
+                lab.run_experiment_c_playback(lab.exp_c.leon_active_mid, lab.exp_c.leon_active_bid)
+            end
+        end
+
+        imgui.text("Provisional Locomotion Candidates:")
         if imgui.button("Play Stance / Idle (ID 160)##btn_play_160") then
             lab.run_experiment_c_playback(160, 1)
         end
@@ -1001,10 +1070,27 @@ local function draw_lab_ui()
         end
         imgui.text("Verdict: " .. lab.exp_c.last_result)
 
+        -- Visual Confirmation Step (Separating logical telemetry from viewport observation)
+        if lab.exp_c.playback_status == "FRAME_PROGRESSION_VERIFIED" or lab.exp_c.playback_status == "PLAYBACK_AND_VISUAL_VERIFIED" then
+            imgui.spacing()
+            local v_changed, v_val = imgui.checkbox("Visual Animation Playback Confirmed in Viewport##chk_visual", lab.exp_c.visual_confirmed)
+            if v_changed then
+                lab.exp_c.visual_confirmed = v_val
+                if v_val then
+                    lab.exp_c.playback_status = "PLAYBACK_AND_VISUAL_VERIFIED"
+                    lab.exp_c.last_result = string.format("PASS: PLAYBACK_AND_VISUAL_VERIFIED (Logical frame progression verified and confirmed visually on character)")
+                else
+                    lab.exp_c.playback_status = "FRAME_PROGRESSION_VERIFIED"
+                end
+                lab_log("[Exp C] Visual Confirmation Changed: " .. tostring(v_val))
+            end
+        end
+
         imgui.spacing()
         imgui.text_colored("Candidate Motion IDs:", 0.6, 0.9, 0.6, 1.0)
         for _, m in ipairs(lab.exp_c.discovered_motions) do
-            imgui.text(string.format("  Motion %d (Bank %d): %s", m.id, m.bank, m.name))
+            local tag = m.is_active and " [ACTIVE IN SCENE]" or " [Provisional]"
+            imgui.text(string.format("  Motion %d (Bank %d): %s%s", m.id, m.bank, m.name, tag))
         end
 
     -- TAB 5: LOGS
