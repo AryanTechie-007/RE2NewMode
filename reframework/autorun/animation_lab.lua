@@ -1,25 +1,31 @@
 --[[
     Resident Evil 2: Duo Mode
-    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Edition v1.5.0)
+    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Safety Edition v1.5.1)
     File: reframework/autorun/animation_lab.lua
     Author: AryanTechie-007
 
     Purpose:
     Isolated in-engine reverse-engineering laboratory to establish a verified,
     animated Claire companion pathway while maintaining the playable M0 baseline:
-      - Experiment A: Native Survivor Casting (SurvivorAssignManager, standby overloads, CastingOrder construction, SurvivorCastingRequest deep probe & controlled PL1000 retry)
-      - Experiment B: GameObject Duplication (via.Scene / via.Folder duplicate signatures, harmless non-player control test, player duplication & input disabling)
-      - Experiment C: Claire Animation Playback (Target component inventory, native MotionBankAsset query, pause/speed/weight inspection, frame-step probe & controlled playback)
+      - Experiment A: Native Survivor Casting (Passive reflection separated from controlled invocation;
+                      pre/post scene state diffing; strict exclusion of existing Claire companion)
+      - Experiment B: GameObject Duplication (Harmless inert static prop control target; established identity
+                      and verified cleanup route first; strictly single-route sequential destruction)
+      - Experiment C: Claire Animation Playback & Stalled Frame Investigation (Full snapshot and restoration
+                      of original Motion/Layer settings; capability reflection before setter invocation;
+                      no silent bank substitution; distinct 3-tier verification)
 
-    Strict Verification Rules:
+    Strict Verification Rules (v1.5.1):
       - Rule 1: No imaginary functionality. Distinguish confirmed observations from hypotheses.
-      - Rule 2: No speculative RE Engine APIs in production.
-      - Rule 3: Single confirmed destruction route without double-free risks; unverified cleanups retain references.
-      - Rule 4: Event-level structured CSV & text logging for every API call, argument, return value, and state transition.
+      - Rule 2: Passive reflection completely separated from state-mutating casting invocations.
+      - Rule 3: Single confirmed destruction route at a time; verify get_Valid()==false before claiming success.
+      - Rule 4: No silent bank substitutions. Cross-bank assignment requires explicit user permission.
+      - Rule 5: Schema-versioned CSV logging (animation_lab_session_v151.csv) with guaranteed identical column count.
+      - Rule 6: Complete isolation from character_renderer.lua and M0 playable baseline.
 ]]
 
 local lab = {
-    version = "1.5.0-m1-validation",
+    version = "1.5.1-m1-safety",
     window_open = false,
     selected_tab = 1,
     log_buffer = {},
@@ -27,7 +33,7 @@ local lab = {
 
     -- Experiment A State: Native Survivor Casting
     exp_a = {
-        status = "NOT_RUN", -- NOT_RUN | RUNNING | PASS | PARTIAL | UNVERIFIED | FAILED | CLEANED_UP
+        status = "NOT_RUN", -- NOT_RUN | REFLECTION_COMPLETE | CASTING_TESTED | PASS | PARTIAL | REFUSED | FAILED | CLEANED_UP
         singleton_found = false,
         types_resolved = {},
         casting_methods = {},
@@ -36,7 +42,13 @@ local lab = {
         order_constructors = {},
         exec_casting_request = nil,
         exec_request_fields = {},
-        returned_actor = nil,
+        selected_player_type = 1000, -- PL1000 = Claire (1000)
+        selected_reason = 1,         -- InitialSet = 1
+        selected_mode = 0,           -- Normal = 0
+        last_standby_call = "None",
+        last_standby_ret = "NOT_TESTED",
+        apply_casting_result = "NOT_TESTED",
+        pre_cast_actor_count = 0,
         created_actor = nil,
         actor_valid = false,
         has_motion = false,
@@ -44,27 +56,29 @@ local lab = {
         has_survivor_motion = false,
         motion_active = false,
         layer_count = 0,
-        standby_1000_result = "NOT_TESTED",
-        last_result = "Standing by. Click 'Run Experiment A Probe' to inspect Native Survivor Casting.",
+        last_result = "Standing by. Step 1: Passive Reflection. Step 2: Controlled Standby Invocation.",
     },
 
     -- Experiment B State: Character & Control Duplication
     exp_b = {
         status = "NOT_RUN", -- NOT_RUN | RUNNING | PASS | PARTIAL | FAILED | CLEANED_UP | CLEANUP_FAILED
+        control_target_name = "None",
+        control_target_ptr = "None",
+        control_target_components = {},
+        control_test_status = "NOT_RUN", -- NOT_RUN | RUNNING | SUCCESS | FAILED | SKIPPED
+        control_test_verdict = "Not tested yet.",
+        control_cleanup_status = "NOT_RUN",
         clone_entity = nil,
         surviving_components = {},
         scene_duplicate_methods = {},
         folder_duplicate_methods = {},
-        control_target_name = "None",
-        control_test_status = "NOT_RUN", -- NOT_RUN | SUCCESS | FAILED | SKIPPED
-        control_test_verdict = "Not tested yet.",
         input_stripped = false,
         input_verified_disabled = false,
         independent_transform_control = false,
         motion_ticking = false,
         clone_frame_history = {},
         cleanup_status = "No test clone instantiated.",
-        last_result = "Standing by. Click 'Run Exp B Control Test' or 'Spawn Duplicate Actor'.",
+        last_result = "Standing by. Step 1: Control Test on Inert Prop. Step 2: Player Duplication.",
         loco_test = {
             active = false,
             current_frame = 0,
@@ -82,7 +96,7 @@ local lab = {
     -- Experiment C State: Claire Animation Playback & Stalled Frame Investigation
     exp_c = {
         inspection_status = "NOT_RUN", -- NOT_RUN | INSPECTION_COMPLETE | INSPECTION_PARTIAL | FAILED
-        playback_status = "NOT_RUN",   -- NOT_RUN | TESTING | FRAME_PROGRESSION_VERIFIED | PLAYBACK_AND_VISUAL_VERIFIED | PLAYBACK_FAILED | PLAYBACK_STALLED | PLAYBACK_OVERRIDDEN
+        playback_status = "NOT_RUN",   -- NOT_RUN | TESTING | FRAME_PROGRESSION_VERIFIED | PLAYBACK_AND_VISUAL_VERIFIED | PLAYBACK_FAILED | PLAYBACK_STALLED | PLAYBACK_OVERRIDDEN | BLOCKED_NO_BANK
         visual_confirmed = false,
         target_name = "None",
         target_components = {},
@@ -102,10 +116,13 @@ local lab = {
         leon_speed = 0.0,
         selected_mid = 160,
         selected_bid = 1,
+        allow_cross_bank_assignment = false, -- EXPLICIT: User must check box to allow substituting Leon's bank
+        original_settings = nil,             -- Full snapshot before any mutation
+        setter_capabilities = {},            -- Verified reflection flags for setters
         discovered_motions = {},
         motion_reflection_methods = {},
         layer_reflection_methods = {},
-        last_result = "Standing by. Step 1: Inspect Target & Animation Reflection. Step 2: Test Playback.",
+        last_result = "Standing by. Step 1: Inspect Target. Step 2: Optional Frame-Step Probe. Step 3: Controlled Playback.",
         playback_monitor = {
             active = false,
             target_obj = nil,
@@ -118,6 +135,9 @@ local lab = {
         }
     }
 }
+
+-- Forward declaration of verdict updater
+local update_exp_b_verdict
 
 -- =========================================================================
 -- Diagnostic Logger & Ring Buffer
@@ -147,32 +167,29 @@ local function format_method_sig(m)
     if not m then return "<nil method>" end
     local mname = m:get_name() or "<unnamed>"
     local ok, res = pcall(function()
-        local is_stat = false
-        pcall(function() is_stat = m:is_static() end)
-        local p_names = m:get_param_names() or {}
-        local p_types = m:get_param_types() or {}
-        local p_strs = {}
-        for i = 1, #p_names do
-            local pname = p_names[i] or ("arg" .. i)
-            local ptype = p_types[i] and (p_types[i]:get_full_name() or p_types[i]:get_name()) or "unknown"
-            table.insert(p_strs, ptype .. " " .. pname)
+        local rtype = m:get_return_type()
+        local rname = rtype and rtype:get_name() or "System.Void"
+        local pnames = {}
+        for _, p in ipairs(m:get_param_types() or {}) do
+            table.insert(pnames, p:get_name() or "UnknownType")
         end
-        local ret_td = m:get_return_type()
-        local ret_name = ret_td and (ret_td:get_full_name() or ret_td:get_name()) or "void"
-        local prefix = is_stat and "static " or ""
-        return string.format("%s%s %s(%s)", prefix, ret_name, mname, table.concat(p_strs, ", "))
+        return string.format("%s %s(%s)", rname, mname, table.concat(pnames, ", "))
     end)
-    return ok and res or (mname .. "(format error)")
+    return ok and res or mname
 end
 
 -- =========================================================================
--- Helpers: Player, Scene & Companion Target Resolution
+-- Engine Actor & Scene Resolution Helpers
 -- =========================================================================
 
 local function get_active_player()
-    local pm = sdk.get_managed_singleton("app.ropeway.PlayerManager")
-    if not pm then return nil end
-    local player = pm:call("get_CurrentPlayer")
+    local player = nil
+    pcall(function()
+        local pm = sdk.get_managed_singleton("app.ropeway.PlayerManager")
+        if pm then
+            player = pm:call("get_CurrentPlayer")
+        end
+    end)
     return player
 end
 
@@ -230,41 +247,23 @@ local function get_current_scene(player_go)
             pcall(function() scene = scene_man:call("get_PrimaryScene") end)
             if scene then source = "SceneManager:get_PrimaryScene()" end
         end
-        if not scene then
-            pcall(function()
-                local view = scene_man:call("get_MainView")
-                if view then
-                    scene = view:call("get_PrimaryScene") or view:call("get_Scene")
-                    if scene then source = "SceneManager:get_MainView():get_Scene()" end
-                end
-            end)
-        end
-        if not scene then
-            pcall(function()
-                local count = scene_man:call("get_SceneCount") or 0
-                if count and count > 0 then
-                    scene = scene_man:call("getScene", 0)
-                    if scene then source = "SceneManager:getScene(0)" end
-                end
-            end)
-        end
-    end
-
-    -- Path 4: static via.Scene methods
-    if not scene then
-        pcall(function()
-            local sc_td = sdk.find_type_definition("via.Scene")
-            if sc_td then
-                local m = sc_td:get_method("get_CurrentScene()") or sc_td:get_method("get_PrimaryScene()")
-                if m then
-                    scene = m:call(nil)
-                    if scene then source = "via.Scene static method" end
-                end
-            end
-        end)
     end
 
     return scene, source, folder
+end
+
+-- Checks if a GameObject belongs to the character_renderer.lua companion spawner
+local function is_companion_object(obj)
+    if not obj then return false end
+    local duo = _G.duo_spawner or spawner
+    if duo and duo.spawned_entities then
+        for _, e in ipairs(duo.spawned_entities) do
+            if e and (e == obj or tostring(e) == tostring(obj)) then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 -- Resolves the target actor for animation playback tests (Priority: Claire from character_renderer -> Exp B clone -> Leon)
@@ -302,14 +301,65 @@ local function get_playback_target()
 end
 
 -- =========================================================================
--- STRUCTURED SESSION & EVENT LOGGER — A/B/C RESEARCH TELEMETRY
+-- STRUCTURED & VERSIONED SESSION LOGGER (v1.5.1 Schema - 48 Fixed Columns)
 -- =========================================================================
 
 local session_logger = {
-    path = "reframework/data/duo_mode/animation_lab_session.csv",
+    path = "reframework/data/duo_mode/animation_lab_session_v151.csv",
     frame = 0,
     interval = 30, -- One snapshot every 30 REFramework frames (~2 Hz at 60 FPS)
     ready = false,
+}
+
+local schema_columns = {
+    "record_type",                  -- 1
+    "timestamp",                    -- 2
+    "session_frame",                -- 3
+    "scene_pointer",                -- 4
+    "player_pointer",               -- 5
+    "A_status",                     -- 6
+    "A_singleton",                  -- 7
+    "A_selected_player_type",       -- 8
+    "A_selected_reason",            -- 9
+    "A_selected_mode",              -- 10
+    "A_standby_result",             -- 11
+    "A_actor_pointer",              -- 12
+    "A_actor_valid",                -- 13
+    "A_motion",                     -- 14
+    "A_fsm2",                       -- 15
+    "A_survivor_motion",            -- 16
+    "A_motion_active",              -- 17
+    "A_layer_count",                -- 18
+    "B_status",                     -- 19
+    "B_control_target_name",        -- 20
+    "B_control_target_ptr",         -- 21
+    "B_control_test_status",        -- 22
+    "B_control_cleanup_status",     -- 23
+    "B_clone_pointer",              -- 24
+    "B_clone_valid",                -- 25
+    "B_input_stripped",             -- 26
+    "B_input_verified_disabled",    -- 27
+    "B_transform_verified",         -- 28
+    "B_motion_ticking",             -- 29
+    "B_cleanup_status",             -- 30
+    "B_loco_frames",                -- 31
+    "B_clone_displacement",         -- 32
+    "B_leon_displacement",          -- 33
+    "B_loco_verdict",               -- 34
+    "C_inspection_status",          -- 35
+    "C_playback_status",            -- 36
+    "C_target_name",                -- 37
+    "C_target_pointer",             -- 38
+    "C_target_valid",               -- 39
+    "C_native_bank_present",        -- 40
+    "C_frame_step_result",          -- 41
+    "C_selected_mid",               -- 42
+    "C_selected_bid",               -- 43
+    "C_start_frame",                -- 44
+    "C_current_frame",              -- 45
+    "C_visual_confirmed",           -- 46
+    "event_name",                   -- 47
+    "event_details"                 -- 48
 }
 
 local function csv_value(value)
@@ -318,40 +368,36 @@ local function csv_value(value)
     return '"' .. s .. '"'
 end
 
-local function logger_write_row(values)
+-- Strictly formats a row map into a verified 48-column CSV string
+local function format_csv_row(row_map)
+    local cells = {}
+    for i, col_name in ipairs(schema_columns) do
+        local val = row_map[col_name]
+        cells[i] = csv_value(val)
+    end
+    return table.concat(cells, ",") .. "\n"
+end
+
+local function logger_write_line(line_str)
     local ok, err = pcall(function()
         local f = io.open(session_logger.path, "a")
         if not f then
             error("Could not open session CSV: " .. session_logger.path)
         end
-
-        local row = {}
-        for i, value in ipairs(values) do
-            row[i] = csv_value(value)
-        end
-
-        f:write(table.concat(row, ",") .. "\n")
+        f:write(line_str)
         f:flush()
         f:close()
     end)
 
-    if not ok then
-        if log and log.error then
-            log.error("[AnimLab Logger] " .. tostring(err))
-        end
-        return false
+    if not ok and log and log.error then
+        log.error("[AnimLab Logger] " .. tostring(err))
     end
-
-    return true
+    return ok
 end
 
 local function logger_validity(obj)
     if not obj then return "NO_OBJECT" end
-
-    local ok, value = pcall(function()
-        return obj:call("get_Valid")
-    end)
-
+    local ok, value = pcall(function() return obj:call("get_Valid") end)
     if not ok then return "UNREADABLE" end
     if value == true then return "TRUE" end
     if value == false then return "FALSE" end
@@ -361,59 +407,38 @@ end
 local function logger_init()
     if session_logger.ready then return end
 
-    local header = {
-        "record_type", "timestamp", "session_frame",
-        "scene_pointer", "player_pointer",
-        "A_status", "A_singleton", "A_actor_pointer",
-        "A_actor_valid", "A_motion", "A_fsm2",
-        "A_survivor_motion", "A_motion_active", "A_layer_count",
-        "A_casting_method_count",
-        "B_status", "B_clone_pointer", "B_clone_valid",
-        "B_input_stripped", "B_input_verified_disabled",
-        "B_transform_verified", "B_motion_ticking",
-        "B_components", "B_cleanup_status",
-        "B_loco_frames", "B_clone_displacement",
-        "B_leon_displacement", "B_loco_verdict",
-        "C_inspection_status", "C_playback_status",
-        "C_target_name", "C_target_pointer", "C_target_valid",
-        "C_bank_asset_present", "C_layer_count",
-        "C_active_motion_id", "C_active_bank_id",
-        "C_selected_motion_id", "C_selected_bank_id",
-        "C_monitor_active", "C_monitor_ticks",
-        "C_start_frame", "C_current_frame",
-        "C_visual_confirmed",
-        "event_name", "event_details"
-    }
-
     local existing = io.open(session_logger.path, "r")
     if existing then
         existing:close()
     else
-        logger_write_row(header)
+        -- Write canonical header
+        local header_cells = {}
+        for i, col in ipairs(schema_columns) do
+            header_cells[i] = csv_value(col)
+        end
+        logger_write_line(table.concat(header_cells, ",") .. "\n")
     end
 
     session_logger.ready = true
 
-    logger_write_row({
-        "SESSION_START", os.date("%Y-%m-%d %H:%M:%S"),
-        0, "", "",
-        lab.exp_a.status, "", "", "", "", "", "", "", 0, 0,
-        lab.exp_b.status, "", "", "", "", "", "", "", "",
-        0, 0, 0, "",
-        lab.exp_c.inspection_status, lab.exp_c.playback_status,
-        "", "", "", "", 0, 0, 0, 0, 0,
-        "", 0, 0, 0, "",
-        "SESSION_INIT", lab.version
-    })
-
-    lab_log("[Logger] Structured CSV session & event logging initialized.")
+    local init_row = {
+        record_type = "SESSION_START",
+        timestamp = os.date("%Y-%m-%d %H:%M:%S"),
+        session_frame = 0,
+        A_status = lab.exp_a.status,
+        B_status = lab.exp_b.status,
+        C_inspection_status = lab.exp_c.inspection_status,
+        C_playback_status = lab.exp_c.playback_status,
+        event_name = "SESSION_INIT",
+        event_details = lab.version
+    }
+    logger_write_line(format_csv_row(init_row))
+    lab_log("[Logger] Structured CSV session & event logging initialized (Schema v1.5.1, 48 columns).")
 end
 
--- Event-level telemetry logger for unjittered recording of exact calls, arguments & results
+-- Event-level telemetry logger with strict 48-column mapping
 function lab.log_event(event_type, event_name, event_details)
-    if not session_logger.ready then
-        logger_init()
-    end
+    if not session_logger.ready then logger_init() end
 
     local a = lab.exp_a
     local b = lab.exp_b
@@ -434,60 +459,61 @@ function lab.log_event(event_type, event_name, event_details)
     local target_valid = logger_validity(target)
 
     local row = {
-        event_type or "EVENT",
-        os.date("%Y-%m-%d %H:%M:%S"),
-        session_logger.frame,
-        tostring(scene),
-        tostring(player_go),
+        record_type = event_type or "EVENT",
+        timestamp = os.date("%Y-%m-%d %H:%M:%S"),
+        session_frame = session_logger.frame,
+        scene_pointer = tostring(scene),
+        player_pointer = tostring(player_go),
 
-        a.status,
-        tostring(a.singleton_found),
-        tostring(a.created_actor or a.returned_actor),
-        tostring(a.actor_valid),
-        tostring(a.has_motion),
-        tostring(a.has_motion_fsm2),
-        tostring(a.has_survivor_motion),
-        tostring(a.motion_active),
-        a.layer_count,
-        #a.casting_methods,
+        A_status = a.status,
+        A_singleton = tostring(a.singleton_found),
+        A_selected_player_type = a.selected_player_type,
+        A_selected_reason = a.selected_reason,
+        A_selected_mode = a.selected_mode,
+        A_standby_result = tostring(a.last_standby_ret),
+        A_actor_pointer = tostring(a.created_actor),
+        A_actor_valid = tostring(a.actor_valid),
+        A_motion = tostring(a.has_motion),
+        A_fsm2 = tostring(a.has_motion_fsm2),
+        A_survivor_motion = tostring(a.has_survivor_motion),
+        A_motion_active = tostring(a.motion_active),
+        A_layer_count = a.layer_count,
 
-        b.status,
-        tostring(b.clone_entity),
-        clone_valid,
-        tostring(b.input_stripped),
-        tostring(b.input_verified_disabled),
-        tostring(b.independent_transform_control),
-        tostring(b.motion_ticking),
-        table.concat(b.surviving_components, ";"),
-        b.cleanup_status,
+        B_status = b.status,
+        B_control_target_name = b.control_target_name,
+        B_control_target_ptr = tostring(b.control_target_ptr),
+        B_control_test_status = b.control_test_status,
+        B_control_cleanup_status = b.control_cleanup_status,
+        B_clone_pointer = tostring(b.clone_entity),
+        B_clone_valid = clone_valid,
+        B_input_stripped = tostring(b.input_stripped),
+        B_input_verified_disabled = tostring(b.input_verified_disabled),
+        B_transform_verified = tostring(b.independent_transform_control),
+        B_motion_ticking = tostring(b.motion_ticking),
+        B_cleanup_status = b.cleanup_status,
+        B_loco_frames = loco.current_frame or 0,
+        B_clone_displacement = loco.max_clone_displacement or 0,
+        B_leon_displacement = loco.max_leon_displacement or 0,
+        B_loco_verdict = loco.verdict or "NOT_STARTED",
 
-        loco.current_frame or 0,
-        loco.max_clone_displacement or 0,
-        loco.max_leon_displacement or 0,
-        loco.verdict or "NOT_STARTED",
+        C_inspection_status = c.inspection_status,
+        C_playback_status = c.playback_status,
+        C_target_name = c.target_name,
+        C_target_pointer = tostring(target),
+        C_target_valid = target_valid,
+        C_native_bank_present = tostring(c.claire_native_bank ~= nil),
+        C_frame_step_result = tostring(c.claire_frame_step_result),
+        C_selected_mid = c.selected_mid,
+        C_selected_bid = c.selected_bid,
+        C_start_frame = monitor.start_frame or 0,
+        C_current_frame = monitor.current_frame or 0,
+        C_visual_confirmed = tostring(c.visual_confirmed),
 
-        c.inspection_status,
-        c.playback_status,
-        c.target_name,
-        tostring(target),
-        target_valid,
-        tostring(c.leon_bank_asset ~= nil or c.claire_native_bank ~= nil),
-        c.leon_layer_count,
-        c.leon_active_mid,
-        c.leon_active_bid,
-        c.selected_mid,
-        c.selected_bid,
-        tostring(monitor.active),
-        monitor.ticks_observed or 0,
-        monitor.start_frame or 0,
-        monitor.current_frame or 0,
-        tostring(c.visual_confirmed),
-
-        event_name or "",
-        event_details or ""
+        event_name = event_name or "",
+        event_details = event_details or ""
     }
 
-    logger_write_row(row)
+    logger_write_line(format_csv_row(row))
     lab_log(string.format("[%s] %s: %s", event_type or "EVENT", event_name or "", event_details or ""))
 end
 
@@ -511,60 +537,61 @@ local function logger_snapshot()
     local target_valid = logger_validity(target)
 
     local row = {
-        "SNAPSHOT",
-        os.date("%Y-%m-%d %H:%M:%S"),
-        session_logger.frame,
-        tostring(scene),
-        tostring(player_go),
+        record_type = "SNAPSHOT",
+        timestamp = os.date("%Y-%m-%d %H:%M:%S"),
+        session_frame = session_logger.frame,
+        scene_pointer = tostring(scene),
+        player_pointer = tostring(player_go),
 
-        a.status,
-        tostring(a.singleton_found),
-        tostring(a.created_actor or a.returned_actor),
-        tostring(a.actor_valid),
-        tostring(a.has_motion),
-        tostring(a.has_motion_fsm2),
-        tostring(a.has_survivor_motion),
-        tostring(a.motion_active),
-        a.layer_count,
-        #a.casting_methods,
+        A_status = a.status,
+        A_singleton = tostring(a.singleton_found),
+        A_selected_player_type = a.selected_player_type,
+        A_selected_reason = a.selected_reason,
+        A_selected_mode = a.selected_mode,
+        A_standby_result = tostring(a.last_standby_ret),
+        A_actor_pointer = tostring(a.created_actor),
+        A_actor_valid = tostring(a.actor_valid),
+        A_motion = tostring(a.has_motion),
+        A_fsm2 = tostring(a.has_motion_fsm2),
+        A_survivor_motion = tostring(a.has_survivor_motion),
+        A_motion_active = tostring(a.motion_active),
+        A_layer_count = a.layer_count,
 
-        b.status,
-        tostring(b.clone_entity),
-        clone_valid,
-        tostring(b.input_stripped),
-        tostring(b.input_verified_disabled),
-        tostring(b.independent_transform_control),
-        tostring(b.motion_ticking),
-        table.concat(b.surviving_components, ";"),
-        b.cleanup_status,
+        B_status = b.status,
+        B_control_target_name = b.control_target_name,
+        B_control_target_ptr = tostring(b.control_target_ptr),
+        B_control_test_status = b.control_test_status,
+        B_control_cleanup_status = b.control_cleanup_status,
+        B_clone_pointer = tostring(b.clone_entity),
+        B_clone_valid = clone_valid,
+        B_input_stripped = tostring(b.input_stripped),
+        B_input_verified_disabled = tostring(b.input_verified_disabled),
+        B_transform_verified = tostring(b.independent_transform_control),
+        B_motion_ticking = tostring(b.motion_ticking),
+        B_cleanup_status = b.cleanup_status,
+        B_loco_frames = loco.current_frame or 0,
+        B_clone_displacement = loco.max_clone_displacement or 0,
+        B_leon_displacement = loco.max_leon_displacement or 0,
+        B_loco_verdict = loco.verdict or "NOT_STARTED",
 
-        loco.current_frame or 0,
-        loco.max_clone_displacement or 0,
-        loco.max_leon_displacement or 0,
-        loco.verdict or "NOT_STARTED",
+        C_inspection_status = c.inspection_status,
+        C_playback_status = c.playback_status,
+        C_target_name = c.target_name,
+        C_target_pointer = tostring(target),
+        C_target_valid = target_valid,
+        C_native_bank_present = tostring(c.claire_native_bank ~= nil),
+        C_frame_step_result = tostring(c.claire_frame_step_result),
+        C_selected_mid = c.selected_mid,
+        C_selected_bid = c.selected_bid,
+        C_start_frame = monitor.start_frame or 0,
+        C_current_frame = monitor.current_frame or 0,
+        C_visual_confirmed = tostring(c.visual_confirmed),
 
-        c.inspection_status,
-        c.playback_status,
-        c.target_name,
-        tostring(target),
-        target_valid,
-        tostring(c.leon_bank_asset ~= nil or c.claire_native_bank ~= nil),
-        c.leon_layer_count,
-        c.leon_active_mid,
-        c.leon_active_bid,
-        c.selected_mid,
-        c.selected_bid,
-        tostring(monitor.active),
-        monitor.ticks_observed or 0,
-        monitor.start_frame or 0,
-        monitor.current_frame or 0,
-        tostring(c.visual_confirmed),
-
-        "FRAME_SNAPSHOT",
-        ""
+        event_name = "FRAME_SNAPSHOT",
+        event_details = ""
     }
 
-    return logger_write_row(row)
+    return logger_write_line(format_csv_row(row))
 end
 
 local function logger_update()
@@ -580,11 +607,12 @@ local function logger_update()
 end
 
 -- =========================================================================
--- EXPERIMENT A: Native Survivor Casting Deep Reverse Engineering & Controlled PL1000 Retry
+-- EXPERIMENT A: Native Survivor Casting (Separated Reflection & Controlled Calls)
 -- =========================================================================
 
-function lab.run_experiment_a()
-    lab.log_event("EXP_START", "EXPERIMENT_A", "Starting Native Survivor Casting Reverse Engineering v1.5")
+-- Passive Reflection Probe: DOES NOT INVOKE CASTING OR APPLY
+function lab.run_experiment_a_reflect()
+    lab.log_event("EXP_START", "EXP_A_REFLECT", "Starting Native Survivor Casting Passive Reflection Probe")
     lab.exp_a.status = "RUNNING"
     lab.exp_a.types_resolved = {}
     lab.exp_a.casting_methods = {}
@@ -592,14 +620,6 @@ function lab.run_experiment_a()
     lab.exp_a.order_types_resolved = {}
     lab.exp_a.order_constructors = {}
     lab.exp_a.exec_request_fields = {}
-    lab.exp_a.created_actor = nil
-    lab.exp_a.returned_actor = nil
-    lab.exp_a.actor_valid = false
-    lab.exp_a.has_motion = false
-    lab.exp_a.has_motion_fsm2 = false
-    lab.exp_a.has_survivor_motion = false
-    lab.exp_a.motion_active = false
-    lab.exp_a.layer_count = 0
 
     -- 1. Probe Core Engine Types
     local candidate_types = {
@@ -639,7 +659,7 @@ function lab.run_experiment_a()
         end
     end
 
-    -- 3. Investigate CastingOrder Types (Constructors, Fields & Instantiation)
+    -- 3. Investigate CastingOrder Types (Constructors & Fields)
     local order_type_names = {
         "app.ropeway.SurvivorAssignManager.CastingOrder",
         "app.ropeway.SurvivorAssignManager.CastingOrderNpc",
@@ -660,15 +680,6 @@ function lab.run_experiment_a()
             end
             lab.exp_a.order_constructors[otname] = ctors
             lab.log_event("ORDER_TYPE_AUDIT", otname, string.format("Constructors: %d, Fields: %d", #ctors, #(otd:get_fields() or {})))
-            
-            -- Attempt protected instantiation probe
-            local inst = nil
-            pcall(function() inst = sdk.create_instance(otname) end)
-            if inst then
-                lab.log_event("ORDER_INSTANCE_PROBE", otname, "SUCCESS: Instance allocated at " .. tostring(inst))
-            else
-                lab.log_event("ORDER_INSTANCE_PROBE", otname, "NIL: Parameterless constructor rejected or type abstract.")
-            end
         end
     end
 
@@ -678,7 +689,7 @@ function lab.run_experiment_a()
     if not sam then
         lab.exp_a.status = "FAILED"
         lab.exp_a.last_result = "FAIL: SurvivorAssignManager singleton not active in scene."
-        lab.log_event("EXP_RESULT", "EXP_A_FAIL", lab.exp_a.last_result)
+        lab.log_event("EXP_RESULT", "EXP_A_REFLECT_FAIL", lab.exp_a.last_result)
         return
     end
 
@@ -692,7 +703,7 @@ function lab.run_experiment_a()
         curr_phase = sam:get_field("CurrentPhase")
         stack_req = sam:get_field("StackRequest")
     end)
-    lab.log_event("SAM_STATE_BEFORE", "SurvivorAssignManager",
+    lab.log_event("SAM_STATE_INSPECT", "SurvivorAssignManager",
         string.format("RequestTransactionNow=%s, CurrentPhase=%s, StackRequest=%s", tostring(req_tx_now), tostring(curr_phase), tostring(stack_req)))
 
     -- 5. Deep Inspection of SurvivorManager & get_ExecCastingRequest()
@@ -704,10 +715,9 @@ function lab.run_experiment_a()
         pcall(function() in_c_before = sm:call("inCasting") end)
         pcall(function() exec_req = sm:call("get_ExecCastingRequest") end)
         lab.exp_a.exec_casting_request = exec_req
-        lab.log_event("SM_STATE_BEFORE", "SurvivorManager",
+        lab.log_event("SM_STATE_INSPECT", "SurvivorManager",
             string.format("inCasting=%s, get_ExecCastingRequest=%s", tostring(in_c_before), tostring(exec_req)))
 
-        -- Inspect what SurvivorCastingRequest actually represents
         if exec_req then
             local req_td = exec_req:get_type_definition()
             if req_td then
@@ -724,7 +734,22 @@ function lab.run_experiment_a()
         end
     end
 
-    -- 6. Controlled Retry using Verified Claire Enum: PlayerType.PL1000 = 1000
+    lab.exp_a.status = "REFLECTION_COMPLETE"
+    lab.exp_a.last_result = string.format("REFLECTION_COMPLETE: Singleton active. Standby overloads: %d. Ready for explicit casting test.", #lab.exp_a.standby_overloads)
+    lab.log_event("EXP_END", "EXP_A_REFLECT", lab.exp_a.last_result)
+end
+
+-- Controlled Standby Invocation: Executes EXACTLY ONE call with pre/post scene diffing
+function lab.run_experiment_a_cast()
+    local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
+    if not sam then
+        lab.exp_a.status = "FAILED"
+        lab.exp_a.last_result = "FAIL: SurvivorAssignManager singleton not active. Run reflection first."
+        lab.log_event("EXP_RESULT", "EXP_A_CAST_FAIL", lab.exp_a.last_result)
+        return
+    end
+
+    local td_sam = sam:get_type_definition()
     local target_standby = nil
     if td_sam then
         for _, m in ipairs(td_sam:get_methods() or {}) do
@@ -741,85 +766,66 @@ function lab.run_experiment_a()
     if not target_standby then
         lab.exp_a.status = "FAILED"
         lab.exp_a.last_result = "FAIL: standby(PlayerType, CastingReason, OfferMode) method definition not located."
-        lab.log_event("EXP_RESULT", "EXP_A_FAIL", lab.exp_a.last_result)
+        lab.log_event("EXP_RESULT", "EXP_A_CAST_FAIL", lab.exp_a.last_result)
         return
     end
 
-    -- Controlled Call 1: standby(PL1000=1000, InitialSet=1, Normal=0)
-    lab.log_event("API_CALL", "STANDBY_INVOKE", "standby(PL1000=1000, InitialSet=1, Normal=0)")
-    local ok1, ret1 = pcall(function() return target_standby:call(sam, 1000, 1, 0) end)
-    lab.log_event("API_RESULT", "STANDBY_RETURN", string.format("ok=%s, ret=%s (0=Accepted, 1=Refused)", tostring(ok1), tostring(ret1)))
-    lab.exp_a.standby_1000_result = string.format("Call 1 (InitialSet=1): ret=%s", tostring(ret1))
-
-    -- Controlled Call 2: if refused, retry with CastingReason.Debug = 8
-    local final_ret = ret1
-    if ok1 and ret1 == 1 then
-        lab.log_event("API_CALL", "STANDBY_RETRY_DEBUG", "standby(PL1000=1000, Debug=8, Normal=0)")
-        local ok2, ret2 = pcall(function() return target_standby:call(sam, 1000, 8, 0) end)
-        lab.log_event("API_RESULT", "STANDBY_DEBUG_RETURN", string.format("ok=%s, ret=%s (0=Accepted, 1=Refused)", tostring(ok2), tostring(ret2)))
-        lab.exp_a.standby_1000_result = lab.exp_a.standby_1000_result .. string.format(" | Call 2 (Debug=8): ret=%s", tostring(ret2))
-        final_ret = ret2
-    end
-
-    -- Controlled Call 3: if still refused, retry with CastingReason.None = 0
-    if final_ret == 1 then
-        lab.log_event("API_CALL", "STANDBY_RETRY_NONE", "standby(PL1000=1000, None=0, Normal=0)")
-        local ok3, ret3 = pcall(function() return target_standby:call(sam, 1000, 0, 0) end)
-        lab.log_event("API_RESULT", "STANDBY_NONE_RETURN", string.format("ok=%s, ret=%s (0=Accepted, 1=Refused)", tostring(ok3), tostring(ret3)))
-        lab.exp_a.standby_1000_result = lab.exp_a.standby_1000_result .. string.format(" | Call 3 (None=0): ret=%s", tostring(ret3))
-        final_ret = ret3
-    end
-
-    -- 7. State Transitions After Calls
-    local req_tx_after = nil
-    local curr_phase_after = nil
-    pcall(function()
-        req_tx_after = sam:get_field("RequestTransactionNow")
-        curr_phase_after = sam:get_field("CurrentPhase")
-    end)
-    lab.log_event("SAM_STATE_AFTER", "SurvivorAssignManager",
-        string.format("RequestTransactionNow=%s, CurrentPhase=%s", tostring(req_tx_after), tostring(curr_phase_after)))
-
-    if sm then
-        local in_c_after = false
-        local exec_req_after = nil
-        pcall(function() in_c_after = sm:call("inCasting") end)
-        pcall(function() exec_req_after = sm:call("get_ExecCastingRequest") end)
-        lab.log_event("SM_STATE_AFTER", "SurvivorManager",
-            string.format("inCasting=%s, get_ExecCastingRequest=%s", tostring(in_c_after), tostring(exec_req_after)))
-
-        -- Attempt applyCastingRequest only if request transaction was queued
-        if req_tx_after == true or in_c_after == false and exec_req_after then
-            lab.log_event("API_CALL", "APPLY_CASTING_INVOKE", "Attempting applyCastingRequest() on SurvivorManager")
-            pcall(function() sm:call("applyCastingRequest") end)
+    -- 1. Snapshot ALL pre-existing pointers to guarantee we NEVER mistake existing objects for newly cast actors
+    local pre_existing_pointers = {}
+    local duo = _G.duo_spawner or spawner
+    if duo and duo.spawned_entities then
+        for _, e in ipairs(duo.spawned_entities) do
+            if e then pre_existing_pointers[tostring(e)] = true end
         end
     end
 
-    -- 8. Scan Scene for Newly Created/Cast Actor
-    local candidate_actor = nil
-    pcall(function()
-        local go_td = sdk.find_type_definition("via.GameObject")
-        if go_td then
-            local find_m = go_td:get_method("find(System.String)")
-            if find_m then
-                for _, target_name in ipairs({"pl1000", "pl1000_body", "survivor", "Claire"}) do
-                    local found = find_m:call(nil, target_name)
-                    if found then
-                        candidate_actor = found
-                        break
-                    end
+    local go_td = sdk.find_type_definition("via.GameObject")
+    local find_m = go_td and go_td:get_method("find(System.String)")
+    if find_m then
+        for _, name in ipairs({"pl1000", "pl1000_body", "survivor", "Claire", "Claire_Body", "pl0000"}) do
+            local found = find_m:call(nil, name)
+            if found then pre_existing_pointers[tostring(found)] = true end
+        end
+    end
+
+    -- 2. Execute the single, user-configured call
+    local ptype = lab.exp_a.selected_player_type
+    local reason = lab.exp_a.selected_reason
+    local mode = lab.exp_a.selected_mode
+
+    lab.exp_a.last_standby_call = string.format("standby(%d, %d, %d)", ptype, reason, mode)
+    lab.log_event("API_CALL", "STANDBY_INVOKE", lab.exp_a.last_standby_call)
+
+    local ok, ret = pcall(function() return target_standby:call(sam, ptype, reason, mode) end)
+    lab.exp_a.last_standby_ret = tostring(ret)
+    lab.log_event("API_RESULT", "STANDBY_RETURN", string.format("ok=%s, ret=%s (0=Accepted, 1=Refused)", tostring(ok), tostring(ret)))
+
+    -- 3. Check State Transitions
+    local req_tx_after = nil
+    pcall(function() req_tx_after = sam:get_field("RequestTransactionNow") end)
+
+    -- 4. Scene Diffing: Scan for genuinely newly created actor
+    local newly_created_actor = nil
+    if find_m then
+        for _, name in ipairs({"pl1000", "pl1000_body", "survivor", "Claire"}) do
+            local found = find_m:call(nil, name)
+            if found then
+                local ptr_str = tostring(found)
+                -- STRICT: Categorically ignore if it existed prior to the call or belongs to companion spawner
+                if not pre_existing_pointers[ptr_str] and not is_companion_object(found) then
+                    newly_created_actor = found
+                    break
                 end
             end
         end
-    end)
+    end
 
-    if candidate_actor then
-        lab.exp_a.created_actor = candidate_actor
-        lab.exp_a.returned_actor = candidate_actor
-        lab.log_event("ACTOR_DISCOVERY", "EXP_A_ACTOR_FOUND", "Found candidate actor: " .. tostring(candidate_actor))
+    if newly_created_actor then
+        lab.exp_a.created_actor = newly_created_actor
+        lab.log_event("ACTOR_DISCOVERY", "GENUINE_NEW_ACTOR_FOUND", "Found genuinely new actor at " .. tostring(newly_created_actor))
 
         local actor_v = false
-        pcall(function() actor_v = (candidate_actor:call("get_Valid") == true) end)
+        pcall(function() actor_v = (newly_created_actor:call("get_Valid") == true) end)
         lab.exp_a.actor_valid = actor_v
 
         local has_m = false
@@ -829,7 +835,7 @@ function lab.run_experiment_a()
         local l_count = 0
 
         pcall(function()
-            local c_mot = candidate_actor:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+            local c_mot = newly_created_actor:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
             has_m = (c_mot ~= nil)
             if c_mot then
                 l_count = c_mot:call("getLayerCount") or 0
@@ -839,8 +845,8 @@ function lab.run_experiment_a()
                     m_active = true
                 end
             end
-            has_f2 = (candidate_actor:call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2")) ~= nil)
-            has_sm = (candidate_actor:call("getComponent(System.Type)", sdk.typeof("app.ropeway.survivor.SurvivorMotionController")) ~= nil)
+            has_f2 = (newly_created_actor:call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2")) ~= nil)
+            has_sm = (newly_created_actor:call("getComponent(System.Type)", sdk.typeof("app.ropeway.survivor.SurvivorMotionController")) ~= nil)
         end)
 
         lab.exp_a.has_motion = has_m
@@ -851,87 +857,165 @@ function lab.run_experiment_a()
 
         if actor_v and has_m and (has_f2 or has_sm) and m_active then
             lab.exp_a.status = "PASS"
-            lab.exp_a.last_result = string.format("PASS: Native Claire actor instantiated with active motion controllers (Valid=true, Layers=%d)!", l_count)
+            lab.exp_a.last_result = string.format("PASS: Native actor created and verified via scene diff (Valid=true, Layers=%d)!", l_count)
         else
             lab.exp_a.status = "PARTIAL"
-            lab.exp_a.last_result = string.format("PARTIAL: Actor found (%s, Valid=%s, Motion=%s, Fsm2=%s), but active ticking unconfirmed.",
-                tostring(candidate_actor), tostring(actor_v), tostring(has_m), tostring(has_f2))
+            lab.exp_a.last_result = string.format("PARTIAL: New actor spawned (%s), but active ticking unconfirmed.", tostring(newly_created_actor))
         end
     else
-        if final_ret == 0 then
+        -- No newly created actor in current frame
+        if ret == 0 then
             lab.exp_a.status = "PARTIAL"
-            lab.exp_a.last_result = "PARTIAL: standby(1000) returned Accepted (0) and transaction queued, but actor instantiation not observed in current frame."
+            lab.exp_a.last_result = string.format("PARTIAL: standby returned Accepted (0) [RequestTx=%s], but no new actor instantiated in current frame.", tostring(req_tx_after))
+        elseif ret == 1 then
+            lab.exp_a.status = "REFUSED"
+            lab.exp_a.last_result = string.format("REFUSED: standby returned Refused (1) for PlayerType=%d, Reason=%d, Mode=%d.", ptype, reason, mode)
         else
-            lab.exp_a.status = "UNVERIFIED"
-            lab.exp_a.last_result = string.format("UNVERIFIED: standby(PL1000=1000) returned Refused (1) across all tested CastingReasons. SurvivorAssignManager requires formal CastingOrder object or campaign conditions. (%s)", lab.exp_a.standby_1000_result)
+            lab.exp_a.status = "FAILED"
+            lab.exp_a.last_result = string.format("FAILED: standby call returned unexpected code: %s.", tostring(ret))
         end
     end
 
-    lab.log_event("EXP_END", "EXPERIMENT_A", lab.exp_a.last_result)
+    lab.log_event("EXP_END", "EXP_A_CAST", lab.exp_a.last_result)
 end
 
-function lab.cleanup_experiment_a()
-    if not lab.exp_a.created_actor then
-        lab.log_event("CLEANUP", "EXP_A_CLEANUP", "No active native actor to clean up.")
+-- Explicit Trigger for SurvivorManager:applyCastingRequest()
+function lab.run_experiment_a_apply()
+    local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
+    if not sm then
+        lab.exp_a.apply_casting_result = "FAIL: SurvivorManager not active."
+        lab.log_event("EXP_RESULT", "EXP_A_APPLY_FAIL", lab.exp_a.apply_casting_result)
         return
     end
 
+    local in_c_before = false
+    pcall(function() in_c_before = sm:call("inCasting") end)
+    lab.log_event("API_CALL", "APPLY_CASTING_INVOKE", string.format("SurvivorManager:applyCastingRequest() [inCastingBefore=%s]", tostring(in_c_before)))
+
+    local ok, err = pcall(function() sm:call("applyCastingRequest") end)
+    local in_c_after = false
+    pcall(function() in_c_after = sm:call("inCasting") end)
+
+    if ok then
+        lab.exp_a.apply_casting_result = string.format("SUCCESS: applyCastingRequest executed (inCasting: %s -> %s).", tostring(in_c_before), tostring(in_c_after))
+    else
+        lab.exp_a.apply_casting_result = "FAIL: applyCastingRequest threw exception: " .. tostring(err)
+    end
+    lab.log_event("API_RESULT", "APPLY_CASTING_RESULT", lab.exp_a.apply_casting_result)
+end
+
+-- Safe Verified Cleanup for Experiment A
+function lab.cleanup_experiment_a()
+    lab.log_event("CLEANUP_START", "EXP_A_CLEANUP", "Initiating verified cleanup for cast actor")
     local actor = lab.exp_a.created_actor
-    lab.log_event("CLEANUP_START", "EXP_A_CLEANUP", "Attempting verified cleanup of native actor: " .. tostring(actor))
+    if not actor then
+        lab.log_event("CLEANUP_INFO", "EXP_A_CLEANUP", "No active cast actor to clean up.")
+        return
+    end
 
-    local cur_scene = get_current_scene()
-    pcall(function()
-        actor:call("set_DrawSelf", false)
-        actor:call("set_UpdateSelf", false)
-    end)
+    local player = get_active_player()
+    local player_go = get_player_go(player)
+    local cur_scene = get_current_scene(player_go)
 
+    -- Route 1: Scene-level destruction
+    local is_v1 = true
     if cur_scene then
         pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", actor) end)
-        pcall(function() cur_scene:call("destroyGameObject", actor) end)
+        pcall(function() is_v1 = (actor:call("get_Valid") == true) end)
     end
 
-    local is_v = true
-    pcall(function() is_v = actor:call("get_Valid") end)
-    if is_v == false then
+    if not is_v1 then
         lab.exp_a.created_actor = nil
+        lab.exp_a.actor_valid = false
         lab.exp_a.status = "CLEANED_UP"
-        lab.log_event("CLEANUP_VERIFIED", "EXP_A_CLEANUP", "Native actor successfully destroyed (get_Valid==false).")
+        lab.log_event("CLEANUP_SUCCESS", "EXP_A_CLEANUP", "Cast actor destroyed via Route 1 (verified get_Valid==false).")
+        return
+    end
+
+    -- Route 2: Fallback static GameObject.destroy ONLY if Route 1 did not invalidate
+    local go_td = sdk.find_type_definition("via.GameObject")
+    local destroy_static = go_td and go_td:get_method("destroy(via.GameObject)")
+    if destroy_static then
+        pcall(function() destroy_static:call(nil, actor) end)
+    end
+
+    local is_v2 = true
+    pcall(function() is_v2 = (actor:call("get_Valid") == true) end)
+
+    if not is_v2 then
+        lab.exp_a.created_actor = nil
+        lab.exp_a.actor_valid = false
+        lab.exp_a.status = "CLEANED_UP"
+        lab.log_event("CLEANUP_SUCCESS", "EXP_A_CLEANUP", "Cast actor destroyed via Route 2 fallback (verified get_Valid==false).")
     else
-        lab.log_event("CLEANUP_UNVERIFIED", "EXP_A_CLEANUP", "Native actor still reports valid after destroy call.")
+        lab.log_event("CLEANUP_FAILED", "EXP_A_CLEANUP", "Cast actor could not be invalidated (still get_Valid==true).")
     end
 end
 
 -- =========================================================================
--- EXPERIMENT B: GameObject Duplication Deep Reverse Engineering & Control Test
+-- EXPERIMENT B: Character & Control Duplication (Inert Prop Target & Sequential Cleanup)
 -- =========================================================================
 
-local function update_exp_b_verdict()
-    local has_motion = false
-    for _, c in ipairs(lab.exp_b.surviving_components) do
-        if c == "via.motion.Motion" then has_motion = true end
+-- Helper to check if a GameObject is an inert static prop (harmless non-player target)
+local function is_inert_prop(obj, player_go)
+    if not obj or obj == player_go or is_companion_object(obj) then return false end
+
+    local is_v = false
+    pcall(function() is_v = (obj:call("get_Valid") == true) end)
+    if not is_v then return false end
+
+    -- Check forbidden components that make an object sensitive
+    local forbidden_types = {
+        "via.camera.Camera",
+        "via.render.Light",
+        "app.ropeway.PlayerManager",
+        "app.ropeway.PlayerInputReceiver",
+        "app.ropeway.PadManager",
+        "app.ropeway.survivor.SurvivorMotionController",
+        "via.motion.MotionFsm2",
+        "via.gui.GUI"
+    }
+
+    for _, ft in ipairs(forbidden_types) do
+        local ok, c = pcall(function() return obj:call("getComponent(System.Type)", sdk.typeof(ft)) end)
+        if ok and c then return false end
     end
 
-    if lab.exp_b.clone_entity and lab.exp_b.input_stripped and lab.exp_b.input_verified_disabled 
-       and lab.exp_b.independent_transform_control and has_motion and lab.exp_b.motion_ticking then
-        lab.exp_b.status = "PASS"
-        lab.exp_b.last_result = "PASS: Duplicate actor created with verified disabled input, verified independent transform control, and ticking motion!"
-    elseif lab.exp_b.clone_entity and lab.exp_b.input_stripped and lab.exp_b.independent_transform_control then
-        lab.exp_b.status = "PARTIAL"
-        lab.exp_b.last_result = string.format("PARTIAL: Transform independent, but motion ticking unconfirmed (MotionTicking=%s).", tostring(lab.exp_b.motion_ticking))
-    elseif lab.exp_b.clone_entity then
-        lab.exp_b.status = "PARTIAL"
-        lab.exp_b.last_result = string.format("PARTIAL: Actor cloned, but input stripping (%s) or independent transform control (%s) unverified.",
-            tostring(lab.exp_b.input_verified_disabled), tostring(lab.exp_b.independent_transform_control))
-    else
-        lab.exp_b.status = "FAILED"
-    end
-    lab.log_event("VERDICT_UPDATE", "EXPERIMENT_B", lab.exp_b.last_result)
+    -- Must have at least a Transform
+    local has_tf = false
+    pcall(function() has_tf = (obj:call("getComponent(System.Type)", sdk.typeof("via.Transform")) ~= nil) end)
+    return has_tf
 end
 
--- Control Test on a harmless non-player GameObject to verify whether duplicateGameObject works at all
+-- Finds a genuinely expendable non-player object in the active scene
+local function find_inert_control_target(player_go)
+    local candidate_names = {
+        "sm00_000", "sm00_001", "sm00_002", "sm00_005", "sm00_010",
+        "sm01_000", "sm02_000", "sm03_000",
+        "StaticMesh", "Environment", "prop_desk", "prop_chair", "prop_door"
+    }
+
+    local go_td = sdk.find_type_definition("via.GameObject")
+    local find_m = go_td and go_td:get_method("find(System.String)")
+
+    if find_m then
+        for _, name in ipairs(candidate_names) do
+            local obj = nil
+            pcall(function() obj = find_m:call(nil, name) end)
+            if obj and is_inert_prop(obj, player_go) then
+                return obj, name
+            end
+        end
+    end
+
+    return nil, "None"
+end
+
+-- Control Test on verified inert prop with single-route sequential cleanup
 function lab.run_experiment_b_control()
-    lab.log_event("EXP_START", "EXP_B_CONTROL", "Starting Control Duplication Test on non-player GameObject")
+    lab.log_event("EXP_START", "EXP_B_CONTROL", "Starting Control Duplication Test on Inert Prop")
     lab.exp_b.control_test_status = "RUNNING"
+    lab.exp_b.control_cleanup_status = "NOT_RUN"
 
     local player = get_active_player()
     local player_go = get_player_go(player)
@@ -944,43 +1028,20 @@ function lab.run_experiment_b_control()
         return
     end
 
-    -- Locate candidate non-player GameObject (Claire body or scene entity)
-    local control_target = nil
-    local duo = _G.duo_spawner or spawner
-    if duo and duo.spawned_entities and #duo.spawned_entities > 0 then
-        control_target = duo.spawned_entities[1]
-        lab.exp_b.control_target_name = "Claire Prefab Body"
-    end
-
-    if not control_target and cur_scene then
-        pcall(function()
-            local go_td = sdk.find_type_definition("via.GameObject")
-            if go_td then
-                local find_m = go_td:get_method("find(System.String)")
-                if find_m then
-                    for _, name in ipairs({"sm00_000", "pl1000_body", "Light", "Camera", "Environment"}) do
-                        local obj = find_m:call(nil, name)
-                        if obj and obj ~= player_go then
-                            control_target = obj
-                            lab.exp_b.control_target_name = name
-                            break
-                        end
-                    end
-                end
-            end
-        end)
-    end
-
+    -- 1. Locate harmless inert non-player object (NOT Claire, NOT Camera, NOT Player)
+    local control_target, target_name = find_inert_control_target(player_go)
     if not control_target then
         lab.exp_b.control_test_status = "SKIPPED"
-        lab.exp_b.control_test_verdict = "SKIPPED: No non-player GameObject found in scene. Click 'SPAWN CLAIRE' first to provide control target."
+        lab.exp_b.control_test_verdict = "SKIPPED: No verified inert static prop found in active scene chunk."
         lab.log_event("CONTROL_RESULT", "EXP_B_CONTROL_SKIPPED", lab.exp_b.control_test_verdict)
         return
     end
 
-    lab.log_event("CONTROL_TARGET", lab.exp_b.control_target_name, tostring(control_target))
+    lab.exp_b.control_target_name = target_name
+    lab.exp_b.control_target_ptr = tostring(control_target)
+    lab.log_event("CONTROL_TARGET_FOUND", target_name, string.format("Pointer: %s (Verified Inert Static Prop)", tostring(control_target)))
 
-    -- Attempt duplication of control target
+    -- 2. Attempt duplication of inert control target
     local control_clone = nil
     pcall(function() control_clone = cur_scene:call("duplicateGameObject(via.GameObject)", control_target) end)
     if not control_clone and cur_folder then
@@ -990,28 +1051,54 @@ function lab.run_experiment_b_control()
         pcall(function() control_clone = cur_scene:call("duplicateGameObject", control_target) end)
     end
 
-    if control_clone then
-        local is_v = false
-        pcall(function() is_v = (control_clone:call("get_Valid") == true) end)
-        lab.exp_b.control_test_status = "SUCCESS"
-        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_SUCCESS: Non-player GameObject ('%s') duplicated cleanly! (Valid=%s, Pointer=%s). Proves duplicateGameObject API works in RE Engine; failure on Leon is target-specific.",
-            lab.exp_b.control_target_name, tostring(is_v), tostring(control_clone))
-        lab.log_event("CONTROL_RESULT", "EXP_B_CONTROL_SUCCESS", lab.exp_b.control_test_verdict)
-
-        -- Immediate clean destruction of control clone
-        pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", control_clone) end)
-        pcall(function() cur_scene:call("destroyGameObject", control_clone) end)
-        lab.log_event("CONTROL_CLEANUP", "EXP_B_CONTROL_DESTROY", "Control clone destroyed safely.")
-    else
+    if not control_clone then
         lab.exp_b.control_test_status = "FAILED"
-        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_FAILED: duplicateGameObject returned nil even for non-player GameObject ('%s'). Indicates API requires specific flags or is disabled in release engine.",
-            lab.exp_b.control_target_name)
+        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_FAILED: duplicateGameObject returned nil for inert prop '%s'.", target_name)
         lab.log_event("CONTROL_RESULT", "EXP_B_CONTROL_FAIL", lab.exp_b.control_test_verdict)
+        return
     end
+
+    local is_v = false
+    pcall(function() is_v = (control_clone:call("get_Valid") == true) end)
+    lab.log_event("CONTROL_DUPLICATE_OK", target_name, string.format("Inert clone created: %s (Valid=%s)", tostring(control_clone), tostring(is_v)))
+
+    -- 3. Strict Sequential Cleanup (One route at a time; never invoke Route 2 if Route 1 succeeded)
+    local is_valid_after_r1 = true
+    pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", control_clone) end)
+    pcall(function() is_valid_after_r1 = (control_clone:call("get_Valid") == true) end)
+
+    if not is_valid_after_r1 then
+        lab.exp_b.control_cleanup_status = "CLEANUP_VERIFIED (Route 1 Scene.destroyGameObject confirmed get_Valid==false)"
+        lab.exp_b.control_test_status = "SUCCESS"
+        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_SUCCESS: Inert prop '%s' duplicated and destroyed cleanly via Route 1.", target_name)
+        lab.log_event("CONTROL_CLEANUP", "EXP_B_CONTROL_DESTROY", lab.exp_b.control_cleanup_status)
+        return
+    end
+
+    -- Route 2 Fallback ONLY IF Route 1 did not invalidate
+    local go_td = sdk.find_type_definition("via.GameObject")
+    local destroy_static = go_td and go_td:get_method("destroy(via.GameObject)")
+    if destroy_static then
+        pcall(function() destroy_static:call(nil, control_clone) end)
+    end
+
+    local is_valid_after_r2 = true
+    pcall(function() is_valid_after_r2 = (control_clone:call("get_Valid") == true) end)
+
+    if not is_valid_after_r2 then
+        lab.exp_b.control_cleanup_status = "CLEANUP_VERIFIED (Route 2 static GameObject.destroy confirmed get_Valid==false)"
+        lab.exp_b.control_test_status = "SUCCESS"
+        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_SUCCESS: Inert prop '%s' duplicated and destroyed via Route 2 fallback.", target_name)
+    else
+        lab.exp_b.control_cleanup_status = "CLEANUP_FAILED (Inert clone still Valid==true)"
+        lab.exp_b.control_test_status = "FAILED"
+        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_FAILED: Inert prop '%s' duplicated, but cleanup failed.", target_name)
+    end
+    lab.log_event("CONTROL_CLEANUP", "EXP_B_CONTROL_DESTROY", lab.exp_b.control_cleanup_status)
 end
 
 function lab.run_experiment_b()
-    lab.log_event("EXP_START", "EXPERIMENT_B", "Starting Player Duplication Probe v1.5")
+    lab.log_event("EXP_START", "EXPERIMENT_B", "Starting Player Duplication Probe v1.5.1")
     lab.exp_b.status = "RUNNING"
     lab.exp_b.scene_duplicate_methods = {}
     lab.exp_b.folder_duplicate_methods = {}
@@ -1023,7 +1110,7 @@ function lab.run_experiment_b()
     lab.exp_b.clone_frame_history = {}
     lab.exp_b.cleanup_status = "No test clone instantiated."
 
-    -- 1. Full Reflection of all duplicate/clone signatures
+    -- 1. Full Reflection of duplicate signatures
     local scene_td = sdk.find_type_definition("via.Scene")
     if scene_td then
         for _, m in ipairs(scene_td:get_methods() or {}) do
@@ -1066,18 +1153,10 @@ function lab.run_experiment_b()
         return
     end
 
-    lab.log_event("SCENE_RESOLVED", tostring(scene_source), string.format("Scene: %s, Folder: %s", tostring(cur_scene), tostring(cur_folder)))
-
-    -- 3. Run Control Test first if not yet run
-    if lab.exp_b.control_test_status == "NOT_RUN" then
-        lab.run_experiment_b_control()
-    end
-
-    -- 4. Controlled Duplication on Player GameObject
+    -- 3. Controlled Duplication on Player GameObject
     local clone = nil
     lab.log_event("API_CALL", "DUPLICATE_PLAYER_INVOKE", "cur_scene:duplicateGameObject(via.GameObject, player_go)")
     pcall(function() clone = cur_scene:call("duplicateGameObject(via.GameObject)", player_go) end)
-    
     if not clone and cur_folder then
         lab.log_event("API_CALL", "DUPLICATE_PLAYER_FOLDER", "cur_scene:duplicateGameObject(player_go, folder)")
         pcall(function() clone = cur_scene:call("duplicateGameObject(via.GameObject, via.Folder)", player_go, cur_folder) end)
@@ -1085,13 +1164,10 @@ function lab.run_experiment_b()
     if not clone then
         pcall(function() clone = cur_scene:call("duplicateGameObject", player_go) end)
     end
-    if not clone and cur_folder then
-        pcall(function() clone = cur_folder:call("duplicateGameObject", player_go) end)
-    end
 
     if not clone then
         lab.exp_b.status = "FAILED"
-        lab.exp_b.last_result = string.format("FAIL: duplicateGameObject returned nil for Player GameObject across all tested signatures. Control test status: %s.", lab.exp_b.control_test_status)
+        lab.exp_b.last_result = string.format("FAIL: duplicateGameObject returned nil for Player GameObject. Engine singleton guards active. (Control test: %s)", lab.exp_b.control_test_status)
         lab.log_event("EXP_RESULT", "EXP_B_PLAYER_FAIL", lab.exp_b.last_result)
         return
     end
@@ -1099,29 +1175,17 @@ function lab.run_experiment_b()
     lab.exp_b.clone_entity = clone
     lab.log_event("EXP_RESULT", "EXP_B_PLAYER_CLONED", "Player GameObject duplicated successfully! Pointer: " .. tostring(clone))
 
-    -- 5. Audit Components Surviving Duplication
+    -- 4. Audit Components Surviving Duplication
     local audit_types = {
-        "via.Transform",
-        "via.render.Mesh",
-        "via.motion.Motion",
-        "via.motion.MotionFsm2",
-        "via.motion.MotionJack",
-        "via.physics.CharacterController",
-        "app.ropeway.PlayerInputReceiver",
-        "app.ropeway.PadManager",
-        "app.ropeway.PlayerMotionController",
-        "app.ropeway.survivor.SurvivorMotionController",
+        "via.Transform", "via.render.Mesh", "via.motion.Motion", "via.motion.MotionFsm2",
+        "via.physics.CharacterController", "app.ropeway.PlayerInputReceiver", "app.ropeway.PadManager",
     }
-
     for _, tname in ipairs(audit_types) do
         local ok, c = pcall(function() return clone:call("getComponent(System.Type)", sdk.typeof(tname)) end)
-        if ok and c then
-            table.insert(lab.exp_b.surviving_components, tname)
-        end
+        if ok and c then table.insert(lab.exp_b.surviving_components, tname) end
     end
-    lab.log_event("COMPONENT_AUDIT", "CLONE_COMPONENTS", table.concat(lab.exp_b.surviving_components, "; "))
 
-    -- 6. Strip and Verify Input Disabling
+    -- 5. Strip and Verify Input Disabling
     local in_rec = nil
     local pad = nil
     pcall(function() in_rec = clone:call("getComponent(System.Type)", sdk.typeof("app.ropeway.PlayerInputReceiver")) end)
@@ -1129,7 +1193,6 @@ function lab.run_experiment_b()
 
     local in_rec_disabled = false
     local pad_disabled = false
-
     if in_rec then
         pcall(function() in_rec:call("set_Valid", false) end)
         pcall(function() in_rec_disabled = (in_rec:call("get_Valid") == false) end)
@@ -1144,16 +1207,10 @@ function lab.run_experiment_b()
         pad_disabled = true
     end
 
-    if in_rec_disabled and pad_disabled then
-        lab.exp_b.input_stripped = true
-        lab.exp_b.input_verified_disabled = true
-    else
-        lab.exp_b.input_stripped = false
-        lab.exp_b.input_verified_disabled = false
-    end
-    lab.log_event("INPUT_STRIP_VERIFY", "EXP_B", string.format("InputStripped=%s, VerifiedDisabled=%s", tostring(lab.exp_b.input_stripped), tostring(lab.exp_b.input_verified_disabled)))
+    lab.exp_b.input_stripped = (in_rec_disabled and pad_disabled)
+    lab.exp_b.input_verified_disabled = (in_rec_disabled and pad_disabled)
 
-    -- 7. Position Clone near Leon & Initiate 60-frame independent transform test
+    -- 6. Position Clone and initiate independent transform test
     local p_tf = player_go:call("get_Transform")
     local c_tf = clone:call("get_Transform")
     if p_tf and c_tf then
@@ -1177,13 +1234,13 @@ function lab.run_experiment_b()
                 leon_unmoved = false,
                 verdict = "TESTING",
             }
-            lab.log_event("TRANSFORM_TEST_INIT", "EXP_B_LOCO", "60-frame independent transform test initiated.")
         end
     end
 
     update_exp_b_verdict()
 end
 
+-- Strictly sequential, verified cleanup of duplicate clone
 function lab.cleanup_experiment_b()
     lab.log_event("CLEANUP_START", "EXP_B_CLEANUP", "Initiating verified destruction of duplicate clone")
 
@@ -1202,53 +1259,175 @@ function lab.cleanup_experiment_b()
         clone:call("set_UpdateSelf", false)
     end)
 
+    -- Route 1: Scene destruction
+    local is_v1 = true
     if cur_scene then
         pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", clone) end)
-        pcall(function() cur_scene:call("destroyGameObject", clone) end)
+        pcall(function() is_v1 = (clone:call("get_Valid") == true) end)
     end
 
-    local is_valid_after_scene = nil
-    pcall(function() is_valid_after_scene = clone:call("get_Valid") end)
-
-    if is_valid_after_scene == false then
-        lab.exp_b.cleanup_status = "CLEANUP_VERIFIED (Destroyed via via.Scene.destroyGameObject, verified get_Valid==false)"
-        lab.log_event("CLEANUP_VERIFIED", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
+    if not is_v1 then
+        lab.exp_b.cleanup_status = "CLEANUP_VERIFIED (Route 1 confirmed get_Valid==false)"
+        lab.log_event("CLEANUP_SUCCESS", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
         lab.exp_b.clone_entity = nil
         lab.exp_b.status = "CLEANED_UP"
         lab.exp_b.last_result = lab.exp_b.cleanup_status
         return
     end
 
-    -- Fallback: static via.GameObject.destroy ONLY if Route 1 did not invalidate
+    -- Route 2: Fallback ONLY IF Route 1 did not invalidate
     local go_td = sdk.find_type_definition("via.GameObject")
     local destroy_static = go_td and go_td:get_method("destroy(via.GameObject)")
     if destroy_static then
         pcall(function() destroy_static:call(nil, clone) end)
     end
 
-    local is_valid_after_fallback = nil
-    pcall(function() is_valid_after_fallback = clone:call("get_Valid") end)
+    local is_v2 = true
+    pcall(function() is_v2 = (clone:call("get_Valid") == true) end)
 
-    if is_valid_after_fallback == false then
-        lab.exp_b.cleanup_status = "CLEANUP_VERIFIED (Destroyed via fallback static via.GameObject.destroy, verified get_Valid==false)"
-        lab.log_event("CLEANUP_VERIFIED", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
+    if not is_v2 then
+        lab.exp_b.cleanup_status = "CLEANUP_VERIFIED (Route 2 fallback confirmed get_Valid==false)"
+        lab.log_event("CLEANUP_SUCCESS", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
         lab.exp_b.clone_entity = nil
         lab.exp_b.status = "CLEANED_UP"
         lab.exp_b.last_result = lab.exp_b.cleanup_status
     else
-        lab.exp_b.cleanup_status = "CLEANUP_UNVERIFIED (Target still reports get_Valid==true)"
-        lab.log_event("CLEANUP_UNVERIFIED", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
+        lab.exp_b.cleanup_status = "CLEANUP_FAILED (Clone still Valid==true)"
+        lab.log_event("CLEANUP_FAILED", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
         lab.exp_b.status = "CLEANUP_FAILED"
         lab.exp_b.last_result = lab.exp_b.cleanup_status
     end
 end
 
+update_exp_b_verdict = function()
+    local b = lab.exp_b
+    if not b.clone_entity then return end
+
+    local is_v = false
+    pcall(function() is_v = (b.clone_entity:call("get_Valid") == true) end)
+
+    if is_v and b.input_verified_disabled and b.independent_transform_control and b.motion_ticking then
+        b.status = "PASS"
+        b.last_result = "PASS: Cloned actor verified with stripped input, independent transform control, and ticking motion."
+    elseif is_v and b.input_verified_disabled and b.independent_transform_control then
+        b.status = "PARTIAL"
+        b.last_result = "PARTIAL: Input stripped and transform control verified, but motion ticking unconfirmed."
+    elseif is_v and b.input_verified_disabled then
+        b.status = "PARTIAL"
+        b.last_result = "PARTIAL: Input stripped, pending transform control verification."
+    elseif is_v then
+        b.status = "PARTIAL"
+        b.last_result = "PARTIAL: Cloned actor exists, but input stripping verification failed."
+    end
+end
+
 -- =========================================================================
--- EXPERIMENT C: Claire Animation Playback Deep Reverse Engineering & Stalled Frame Investigation
+-- EXPERIMENT C: Claire Animation Playback & Stalled Frame Investigation
 -- =========================================================================
 
+-- Helper to audit setter capabilities on Motion and Layer 0 via reflection
+local function audit_motion_setter_capabilities(t_mot, l0)
+    local caps = {
+        mot_set_play = false,
+        mot_set_pause = false,
+        mot_set_playspeed = false,
+        l0_set_play = false,
+        l0_set_pause = false,
+        l0_set_speed = false,
+        l0_set_weight = false,
+        l0_set_frame = false,
+    }
+
+    if t_mot then
+        local td = t_mot:get_type_definition()
+        if td then
+            caps.mot_set_play = (td:get_method("set_Play(System.Boolean)") ~= nil or td:get_method("set_Play") ~= nil)
+            caps.mot_set_pause = (td:get_method("set_Pause(System.Boolean)") ~= nil or td:get_method("set_Pause") ~= nil)
+            caps.mot_set_playspeed = (td:get_method("set_PlaySpeed(System.Single)") ~= nil or td:get_method("set_PlaySpeed") ~= nil)
+        end
+    end
+
+    if l0 then
+        local td = l0:get_type_definition()
+        if td then
+            caps.l0_set_play = (td:get_method("set_Play(System.Boolean)") ~= nil or td:get_method("set_Play") ~= nil)
+            caps.l0_set_pause = (td:get_method("set_Pause(System.Boolean)") ~= nil or td:get_method("set_Pause") ~= nil)
+            caps.l0_set_speed = (td:get_method("set_Speed(System.Single)") ~= nil or td:get_method("set_Speed") ~= nil)
+            caps.l0_set_weight = (td:get_method("set_Weight(System.Single)") ~= nil or td:get_method("set_Weight") ~= nil)
+            caps.l0_set_frame = (td:get_method("set_Frame(System.Single)") ~= nil or td:get_method("set_Frame") ~= nil)
+        end
+    end
+
+    return caps
+end
+
+-- Snapshots all original Motion and Layer 0 settings before any test mutation
+local function snapshot_original_settings(t_mot, l0)
+    local orig = {
+        t_mot = t_mot,
+        l0 = l0,
+        mot_play = nil,
+        mot_pause = nil,
+        mot_playspeed = nil,
+        mot_bank = nil,
+        l0_play = nil,
+        l0_pause = nil,
+        l0_speed = nil,
+        l0_weight = nil,
+        l0_frame = nil,
+        l0_mid = nil,
+        l0_bid = nil,
+    }
+
+    if t_mot then
+        pcall(function() orig.mot_play = t_mot:call("get_Play") end)
+        pcall(function() orig.mot_pause = t_mot:call("get_Pause") end)
+        pcall(function() orig.mot_playspeed = t_mot:call("get_PlaySpeed") end)
+        pcall(function() orig.mot_bank = t_mot:call("get_MotionBankAsset") end)
+    end
+
+    if l0 then
+        pcall(function() orig.l0_play = l0:call("get_Play") end)
+        pcall(function() orig.l0_pause = l0:call("get_Pause") end)
+        pcall(function() orig.l0_speed = l0:call("get_Speed") end)
+        pcall(function() orig.l0_weight = l0:call("get_Weight") end)
+        pcall(function() orig.l0_frame = l0:call("get_Frame") end)
+        pcall(function() orig.l0_mid = l0:call("get_MotionID") end)
+        pcall(function() orig.l0_bid = l0:call("get_BankID") end)
+    end
+
+    return orig
+end
+
+-- Safely restores original Motion and Layer 0 settings using only verified methods
+function lab.restore_experiment_c_state()
+    local orig = lab.exp_c.original_settings
+    if not orig or not orig.t_mot then return end
+    local caps = lab.exp_c.setter_capabilities or {}
+
+    lab.log_event("STATE_RESTORE", "EXP_C_RESTORE", "Restoring original Motion and Layer 0 settings")
+    pcall(function()
+        if caps.mot_set_play and orig.mot_play ~= nil then orig.t_mot:call("set_Play", orig.mot_play) end
+        if caps.mot_set_pause and orig.mot_pause ~= nil then orig.t_mot:call("set_Pause", orig.mot_pause) end
+        if caps.mot_set_playspeed and orig.mot_playspeed ~= nil then orig.t_mot:call("set_PlaySpeed", orig.mot_playspeed) end
+
+        if orig.l0 then
+            if caps.l0_set_play and orig.l0_play ~= nil then orig.l0:call("set_Play", orig.l0_play) end
+            if caps.l0_set_pause and orig.l0_pause ~= nil then orig.l0:call("set_Pause", orig.l0_pause) end
+            if caps.l0_set_speed and orig.l0_speed ~= nil then orig.l0:call("set_Speed", orig.l0_speed) end
+            if caps.l0_set_weight and orig.l0_weight ~= nil then orig.l0:call("set_Weight", orig.l0_weight) end
+            if caps.l0_set_frame and orig.l0_frame ~= nil then orig.l0:call("set_Frame", orig.l0_frame) end
+            if orig.l0_mid and orig.l0_bid and orig.l0_mid > 0 then
+                pcall(function() orig.l0:call("changeMotion", orig.l0_bid, orig.l0_mid, 0.0) end)
+            end
+        end
+    end)
+    lab.log_event("STATE_RESTORE_DONE", "EXP_C_RESTORE", "Original settings restoration completed.")
+end
+
+-- Step 1: Component Audit & Passive Pause/Speed Inspection
 function lab.run_experiment_c_inspect()
-    lab.log_event("EXP_START", "EXPERIMENT_C_INSPECT", "Starting Target & Animation Component Reverse Engineering v1.5")
+    lab.log_event("EXP_START", "EXPERIMENT_C_INSPECT", "Starting Target & Animation Component Audit v1.5.1")
     lab.exp_c.inspection_status = "RUNNING"
     lab.exp_c.target_components = {}
     lab.exp_c.motion_reflection_methods = {}
@@ -1270,27 +1449,16 @@ function lab.run_experiment_c_inspect()
 
     -- 1. Full Component Inventory on Target
     local audit_types = {
-        "via.Transform",
-        "via.render.Mesh",
-        "via.motion.Motion",
-        "via.motion.MotionFsm2",
-        "via.motion.MotionJack",
-        "via.motion.DynamicMotionJack",
-        "via.physics.CharacterController",
-        "app.ropeway.survivor.SurvivorMotionController",
-        "app.ropeway.survivor.SurvivorActionController",
-        "app.ropeway.survivor.SurvivorHeadLookController",
+        "via.Transform", "via.render.Mesh", "via.motion.Motion", "via.motion.MotionFsm2",
+        "via.physics.CharacterController", "app.ropeway.survivor.SurvivorMotionController"
     }
 
     for _, tname in ipairs(audit_types) do
         local ok, c = pcall(function() return target_obj:call("getComponent(System.Type)", sdk.typeof(tname)) end)
-        if ok and c then
-            table.insert(lab.exp_c.target_components, tname)
-        end
+        if ok and c then table.insert(lab.exp_c.target_components, tname) end
     end
-    lab.log_event("COMPONENT_AUDIT", target_desc, table.concat(lab.exp_c.target_components, "; "))
 
-    -- 2. Inspect Target's Native Motion Component & MotionBankAsset BEFORE Modification
+    -- 2. Inspect Target's Native Motion Component & MotionBankAsset
     local t_mot = nil
     pcall(function() t_mot = target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion")) end)
     if not t_mot then
@@ -1300,90 +1468,33 @@ function lab.run_experiment_c_inspect()
         return
     end
 
-    local native_bank = nil
-    pcall(function() native_bank = t_mot:call("get_MotionBankAsset") end)
-    lab.exp_c.claire_native_bank = native_bank
-    lab.log_event("BANK_DISCOVERY", "NATIVE_BANK_BEFORE_MOD", tostring(native_bank))
-
-    -- 3. Reflect Methods on via.motion.Motion & via.motion.TreeLayer
-    local mot_td = t_mot:get_type_definition()
-    if mot_td then
-        for _, m in ipairs(mot_td:get_methods() or {}) do
-            local mn = string.lower(m:get_name() or "")
-            if string.find(mn, "play") or string.find(mn, "pause") or string.find(mn, "speed") 
-               or string.find(mn, "frame") or string.find(mn, "update") or string.find(mn, "step") then
-                local sig = format_method_sig(m)
-                table.insert(lab.exp_c.motion_reflection_methods, sig)
-            end
-        end
-    end
-
     local l0 = nil
     pcall(function() l0 = t_mot:call("getLayer", 0) end)
-    if l0 then
-        local layer_td = l0:get_type_definition()
-        if layer_td then
-            for _, m in ipairs(layer_td:get_methods() or {}) do
-                local mn = string.lower(m:get_name() or "")
-                if string.find(mn, "play") or string.find(mn, "pause") or string.find(mn, "speed") 
-                   or string.find(mn, "frame") or string.find(mn, "weight") or string.find(mn, "motion") then
-                    local sig = format_method_sig(m)
-                    table.insert(lab.exp_c.layer_reflection_methods, sig)
-                end
-            end
-        end
-    end
 
-    -- 4. Deep Inspection of Pause State & Speed Parameters on Target
-    local m_play, m_pause, m_speed = nil, nil, nil
-    local l_play, l_pause, l_speed, l_weight, l_frame = nil, nil, nil, nil, nil
+    -- Audit setter capabilities
+    lab.exp_c.setter_capabilities = audit_motion_setter_capabilities(t_mot, l0)
 
-    pcall(function() m_play = t_mot:call("get_Play") end)
-    pcall(function() m_pause = t_mot:call("get_Pause") end)
-    pcall(function() m_speed = t_mot:call("get_PlaySpeed") end)
+    -- Take initial snapshot of original settings
+    lab.exp_c.original_settings = snapshot_original_settings(t_mot, l0)
 
-    if l0 then
-        pcall(function() l_play = l0:call("get_Play") end)
-        pcall(function() l_pause = l0:call("get_Pause") end)
-        pcall(function() l_speed = l0:call("get_Speed") end)
-        pcall(function() l_weight = l0:call("get_Weight") end)
-        pcall(function() l_frame = l0:call("get_Frame") end)
-    end
+    local native_bank = lab.exp_c.original_settings.mot_bank
+    lab.exp_c.claire_native_bank = native_bank
+    lab.log_event("BANK_DISCOVERY", "NATIVE_BANK_INSPECT", tostring(native_bank))
 
-    lab.exp_c.claire_motion_pause = tostring(m_pause)
-    lab.exp_c.claire_layer_pause = tostring(l_pause)
-    lab.exp_c.claire_play_speed = m_speed or 0.0
-    lab.exp_c.claire_layer_speed = l_speed or 0.0
-    lab.exp_c.claire_layer_weight = l_weight or 0.0
+    -- 3. Deep Inspection of Pause State & Speed Parameters
+    lab.exp_c.claire_motion_pause = tostring(lab.exp_c.original_settings.mot_pause)
+    lab.exp_c.claire_layer_pause = tostring(lab.exp_c.original_settings.l0_pause)
+    lab.exp_c.claire_play_speed = lab.exp_c.original_settings.mot_playspeed or 0.0
+    lab.exp_c.claire_layer_speed = lab.exp_c.original_settings.l0_speed or 0.0
+    lab.exp_c.claire_layer_weight = lab.exp_c.original_settings.l0_weight or 0.0
 
     lab.log_event("PAUSE_SPEED_AUDIT", target_desc,
         string.format("Motion(Play=%s, Pause=%s, Speed=%s) | Layer0(Play=%s, Pause=%s, Speed=%s, Weight=%s, Frame=%s)",
-            tostring(m_play), tostring(m_pause), tostring(m_speed),
-            tostring(l_play), tostring(l_pause), tostring(l_speed), tostring(l_weight), tostring(l_frame)))
+            tostring(lab.exp_c.original_settings.mot_play), tostring(lab.exp_c.original_settings.mot_pause), tostring(lab.exp_c.original_settings.mot_playspeed),
+            tostring(lab.exp_c.original_settings.l0_play), tostring(lab.exp_c.original_settings.l0_pause), tostring(lab.exp_c.original_settings.l0_speed),
+            tostring(lab.exp_c.original_settings.l0_weight), tostring(lab.exp_c.original_settings.l0_frame)))
 
-    -- 5. Controlled Frame-Stepping Probe (Test whether layer accepts frame writing)
-    if l0 then
-        local f_before = l_frame or 0.0
-        local test_step_frame = 12.50
-        local f_after = nil
-        pcall(function() l0:call("set_Frame", test_step_frame) end)
-        pcall(function() f_after = l0:call("get_Frame") end)
-
-        if f_after and math.abs(f_after - test_step_frame) < 0.1 then
-            lab.exp_c.claire_frame_step_tested = true
-            lab.exp_c.claire_frame_step_result = string.format("FRAME_STEP_ACCEPTED: set_Frame(%.1f) successfully updated Layer 0 frame from %.2f to %.2f. Confirms bone transform update path is receptive.",
-                test_step_frame, f_before, f_after)
-            -- Restore original frame
-            pcall(function() l0:call("set_Frame", f_before) end)
-        else
-            lab.exp_c.claire_frame_step_tested = false
-            lab.exp_c.claire_frame_step_result = string.format("FRAME_STEP_REJECTED: set_Frame(%.1f) failed to modify Layer 0 frame (remained %.2f).",
-                test_step_frame, tostring(f_after))
-        end
-        lab.log_event("PROBE_RESULT", "FRAME_STEP_PROBE", lab.exp_c.claire_frame_step_result)
-    end
-
-    -- 6. Inspect Leon's Motion Bank Asset for Comparison
+    -- 4. Inspect Leon's Motion Bank Asset for Comparison (DO NOT AUTO-ASSIGN)
     local player = get_active_player()
     local p_go = get_player_go(player)
     if p_go then
@@ -1404,19 +1515,59 @@ function lab.run_experiment_c_inspect()
     end
 
     lab.exp_c.discovered_motions = {
-        { id = lab.exp_c.leon_active_mid, name = string.format("Leon Active Layer 0 Motion (ID %d) [VERIFIED IN SCENE]", lab.exp_c.leon_active_mid), bank = lab.exp_c.leon_active_bid, is_active = true },
-        { id = 160, name = "Stance / Idle (Standard Pistol - Provisional Candidate)", bank = 1, is_active = false },
-        { id = 161, name = "Walk Forward (Standard Pistol - Provisional Candidate)", bank = 1, is_active = false },
-        { id = 162, name = "Jog / Run Forward (Provisional Candidate)", bank = 1, is_active = false },
-        { id = 163, name = "Turn 90 / 180 Transition (Provisional Candidate)", bank = 1, is_active = false },
+        { id = lab.exp_c.leon_active_mid, name = string.format("Leon Active Motion (ID %d) [SCENE ACTIVE]", lab.exp_c.leon_active_mid), bank = lab.exp_c.leon_active_bid },
+        { id = 160, name = "Stance / Idle (Standard Pistol - Candidate)", bank = 1 },
+        { id = 161, name = "Walk Forward (Standard Pistol - Candidate)", bank = 1 },
+        { id = 162, name = "Jog / Run Forward (Candidate)", bank = 1 },
     }
 
     lab.exp_c.inspection_status = "INSPECTION_COMPLETE"
-    lab.exp_c.last_result = string.format("INSPECTION_COMPLETE: Target '%s' inspected. NativeBank=%s, Pause(Motion=%s, Layer=%s), FrameStep=%s.",
-        target_desc, tostring(native_bank), tostring(lab.exp_c.claire_motion_pause), tostring(lab.exp_c.claire_layer_pause), tostring(lab.exp_c.claire_frame_step_tested))
+    lab.exp_c.last_result = string.format("INSPECTION_COMPLETE: Target '%s' inspected. NativeBank=%s, Pause(Motion=%s, Layer=%s).",
+        target_desc, tostring(native_bank), tostring(lab.exp_c.claire_motion_pause), tostring(lab.exp_c.claire_layer_pause))
     lab.log_event("EXP_END", "EXPERIMENT_C_INSPECT", lab.exp_c.last_result)
 end
 
+-- Step 2: Tier 1 Frame-Step Acceptance Probe (Tests set_Frame 12.5 and immediately restores)
+function lab.run_experiment_c_framestep()
+    local target_obj, target_desc = get_playback_target()
+    if not target_obj then return end
+
+    local t_mot = target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+    local l0 = t_mot and t_mot:call("getLayer", 0)
+    if not l0 then
+        lab.exp_c.claire_frame_step_result = "FAIL: No Layer 0"
+        return
+    end
+
+    local caps = audit_motion_setter_capabilities(t_mot, l0)
+    if not caps.l0_set_frame then
+        lab.exp_c.claire_frame_step_tested = false
+        lab.exp_c.claire_frame_step_result = "FRAME_STEP_REJECTED: Layer 0 has no set_Frame method."
+        lab.log_event("PROBE_RESULT", "FRAME_STEP_PROBE", lab.exp_c.claire_frame_step_result)
+        return
+    end
+
+    local orig_f = l0:call("get_Frame") or 0.0
+    local test_f = 12.50
+    local f_after = nil
+
+    pcall(function() l0:call("set_Frame", test_f) end)
+    pcall(function() f_after = l0:call("get_Frame") end)
+
+    if f_after and math.abs(f_after - test_f) < 0.1 then
+        lab.exp_c.claire_frame_step_tested = true
+        lab.exp_c.claire_frame_step_result = string.format("FRAME_STEP_ACCEPTED: set_Frame(12.5) updated Layer 0 frame (%.2f -> %.2f). Setter functions.", orig_f, f_after)
+    else
+        lab.exp_c.claire_frame_step_tested = false
+        lab.exp_c.claire_frame_step_result = string.format("FRAME_STEP_REJECTED: set_Frame(12.5) failed to update frame (remained %.2f).", tostring(f_after))
+    end
+
+    -- Cleanly restore original frame
+    pcall(function() l0:call("set_Frame", orig_f) end)
+    lab.log_event("PROBE_RESULT", "FRAME_STEP_PROBE", lab.exp_c.claire_frame_step_result)
+end
+
+-- Step 3: Tier 2 Controlled Playback Test (Requires explicit bank permission if native bank is nil)
 function lab.run_experiment_c_playback(target_mid, target_bid)
     lab.log_event("EXP_START", "EXPERIMENT_C_PLAYBACK", string.format("Controlled Playback Test (MotionID: %d, BankID: %d)", target_mid, target_bid))
     lab.exp_c.playback_status = "TESTING"
@@ -1434,96 +1585,81 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
         return
     end
 
-    lab.log_event("PLAYBACK_TARGET", target_desc, tostring(target_obj))
-
-    local t_mot = nil
-    pcall(function() t_mot = target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion")) end)
-    if not t_mot then
+    local t_mot = target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+    local l0 = t_mot and t_mot:call("getLayer", 0)
+    if not t_mot or not l0 then
         lab.exp_c.playback_status = "PLAYBACK_FAILED"
-        lab.exp_c.last_result = string.format("FAIL: Target '%s' has no via.motion.Motion component.", target_desc)
+        lab.exp_c.last_result = "FAIL: Target lacks via.motion.Motion or Layer 0."
         lab.log_event("EXP_RESULT", "EXP_C_PLAYBACK_FAIL", lab.exp_c.last_result)
         return
     end
 
-    -- 1. Determine MotionBankAsset to use (prefer Claire's native bank if present, fallback to Leon's bank)
-    local cur_asset = nil
-    pcall(function() cur_asset = t_mot:call("get_MotionBankAsset") end)
+    -- Snapshot original settings if not yet snapshotted
+    if not lab.exp_c.original_settings then
+        lab.exp_c.original_settings = snapshot_original_settings(t_mot, l0)
+        lab.exp_c.setter_capabilities = audit_motion_setter_capabilities(t_mot, l0)
+    end
 
+    -- 1. Check MotionBankAsset: STRICT NO SILENT SUBSTITUTION
+    local cur_asset = t_mot:call("get_MotionBankAsset")
     if not cur_asset then
-        local bank_to_assign = lab.exp_c.claire_native_bank or lab.exp_c.leon_bank_asset
+        -- Claire has no native bank asset
+        if not lab.exp_c.allow_cross_bank_assignment then
+            lab.exp_c.playback_status = "BLOCKED_NO_BANK"
+            lab.exp_c.last_result = "BLOCKED: Target has no native MotionBankAsset. Check 'Allow Cross-Bank Assignment' to explicitly link Leon's bank."
+            lab.log_event("EXP_RESULT", "EXP_C_NO_BANK", lab.exp_c.last_result)
+            return
+        end
+
+        local bank_to_assign = lab.exp_c.leon_bank_asset
         if not bank_to_assign then
             lab.exp_c.playback_status = "PLAYBACK_FAILED"
-            lab.exp_c.last_result = "FAIL: Target has no MotionBankAsset and Leon's MotionBankAsset is nil. Run inspection first."
+            lab.exp_c.last_result = "FAIL: Leon's MotionBankAsset is nil. Run inspection first."
             lab.log_event("EXP_RESULT", "EXP_C_PLAYBACK_FAIL", lab.exp_c.last_result)
             return
         end
 
-        lab.log_event("API_CALL", "SET_BANK_ASSET", "set_MotionBankAsset: " .. tostring(bank_to_assign))
-        local ok_set, err_set = pcall(function() t_mot:call("set_MotionBankAsset", bank_to_assign) end)
-        if not ok_set then
+        lab.log_event("API_CALL", "EXPLICIT_CROSS_BANK_SET", "set_MotionBankAsset(LeonBank): " .. tostring(bank_to_assign))
+        local ok_set = pcall(function() t_mot:call("set_MotionBankAsset", bank_to_assign) end)
+        local ok_setup = pcall(function() t_mot:call("setupMotionBank") end)
+        if not ok_set or not ok_setup then
             lab.exp_c.playback_status = "PLAYBACK_FAILED"
-            lab.exp_c.last_result = string.format("FAIL: set_MotionBankAsset threw exception: %s", tostring(err_set))
-            lab.log_event("EXP_RESULT", "EXP_C_PLAYBACK_FAIL", lab.exp_c.last_result)
-            return
-        end
-
-        local ok_setup, err_setup = pcall(function() t_mot:call("setupMotionBank") end)
-        if not ok_setup then
-            lab.exp_c.playback_status = "PLAYBACK_FAILED"
-            lab.exp_c.last_result = string.format("FAIL: setupMotionBank threw exception: %s", tostring(err_setup))
-            lab.log_event("EXP_RESULT", "EXP_C_PLAYBACK_FAIL", lab.exp_c.last_result)
+            lab.exp_c.last_result = "FAIL: Cross-bank assignment threw exception."
+            lab.restore_experiment_c_state()
             return
         end
     end
 
-    -- 2. Explicit Unpausing & Speed Activation on Motion Component and Layer 0
+    -- 2. Explicit Unpausing & Speed Activation using ONLY verified setter capabilities
+    local caps = lab.exp_c.setter_capabilities or {}
     pcall(function()
-        t_mot:call("set_Play", true)
-        t_mot:call("set_PlaySpeed", 1.0)
-        pcall(function() t_mot:call("set_Pause", false) end)
-    end)
-
-    local l0 = nil
-    pcall(function() l0 = t_mot:call("getLayer", 0) end)
-    if not l0 then
-        lab.exp_c.playback_status = "PLAYBACK_FAILED"
-        lab.exp_c.last_result = "FAIL: Target Motion component has no Layer 0."
-        lab.log_event("EXP_RESULT", "EXP_C_PLAYBACK_FAIL", lab.exp_c.last_result)
-        return
-    end
-
-    pcall(function()
-        l0:call("set_Play", true)
-        l0:call("set_Speed", 1.0)
-        l0:call("set_Weight", 1.0)
-        pcall(function() l0:call("set_Pause", false) end)
+        if caps.mot_set_play then t_mot:call("set_Play", true) end
+        if caps.mot_set_playspeed then t_mot:call("set_PlaySpeed", 1.0) end
+        if caps.mot_set_pause then t_mot:call("set_Pause", false) end
+        if caps.l0_set_play then l0:call("set_Play", true) end
+        if caps.l0_set_speed then l0:call("set_Speed", 1.0) end
+        if caps.l0_set_weight then l0:call("set_Weight", 1.0) end
+        if caps.l0_set_pause then l0:call("set_Pause", false) end
     end)
 
     -- 3. Execute changeMotion
-    local initial_frame = 0.0
-    pcall(function() initial_frame = l0:call("get_Frame") or 0.0 end)
-
+    local initial_frame = l0:call("get_Frame") or 0.0
     lab.log_event("API_CALL", "CHANGE_MOTION_INVOKE", string.format("changeMotion(Bank=%d, Motion=%d, Blend=5.0) on %s", target_bid, target_mid, target_desc))
 
     local ok_cm, err_cm = pcall(function()
         local td_l = l0:get_type_definition()
         local cm = td_l and (td_l:get_method("changeMotion(System.UInt32, System.UInt32, System.Single)") 
                           or td_l:get_method("changeMotion(System.Int32, System.Int32, System.Single)"))
-        if cm then
-            cm:call(l0, target_bid, target_mid, 5.0)
-        else
-            l0:call("changeMotion", target_bid, target_mid, 5.0)
-        end
+        if cm then cm:call(l0, target_bid, target_mid, 5.0) else l0:call("changeMotion", target_bid, target_mid, 5.0) end
     end)
 
     if not ok_cm then
         lab.exp_c.playback_status = "PLAYBACK_FAILED"
-        lab.exp_c.last_result = string.format("FAIL: changeMotion threw exception: %s", tostring(err_cm))
+        lab.exp_c.last_result = "FAIL: changeMotion threw exception: " .. tostring(err_cm)
         lab.log_event("EXP_RESULT", "EXP_C_PLAYBACK_FAIL", lab.exp_c.last_result)
+        lab.restore_experiment_c_state()
         return
     end
-
-    lab.log_event("API_RESULT", "CHANGE_MOTION_OK", string.format("changeMotion executed cleanly. InitialFrame=%.2f", initial_frame))
 
     -- 4. Initiate 45-frame telemetry monitor
     lab.exp_c.playback_monitor = {
@@ -1597,7 +1733,7 @@ local function update_lab_telemetry()
 
                     if lt.clone_moved and lt.leon_unmoved then
                         lab.exp_b.independent_transform_control = true
-                        lt.verdict = "INDEPENDENT_TRANSFORM_CONTROL_VERIFIED (Clone translated over 60 frames without affecting Leon)"
+                        lt.verdict = "INDEPENDENT_TRANSFORM_CONTROL_VERIFIED"
                     else
                         lab.exp_b.independent_transform_control = false
                         lt.verdict = string.format("FAILED (MaxCloneMoved: %.2f m, MaxLeonMoved: %.2f m)", lt.max_clone_displacement, lt.max_leon_displacement)
@@ -1609,29 +1745,28 @@ local function update_lab_telemetry()
         end
     end
 
-    -- 2. Exp C Playback Frame Progression Monitor with Strict Validity Verification
+    -- 2. Exp C Playback Frame Progression Monitor
     local pm = lab.exp_c.playback_monitor
     if pm and pm.active and pm.target_obj then
         local ok_val, is_valid = pcall(function() return pm.target_obj:call("get_Valid") end)
         if not ok_val or is_valid ~= true then
             pm.active = false
             lab.exp_c.playback_status = "PLAYBACK_FAILED"
-            lab.exp_c.last_result = "FAIL: Target actor validity check failed during monitoring. Target unreadable or destroyed."
+            lab.exp_c.last_result = "FAIL: Target unreadable during monitoring."
             lab.log_event("EXP_RESULT", "EXP_C_MONITOR_FAIL", lab.exp_c.last_result)
+            lab.restore_experiment_c_state()
             return
         end
 
-        local ok_mot, t_mot = pcall(function() return pm.target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion")) end)
-        local ok_l0, l0 = nil, nil
-        if ok_mot and t_mot then
-            ok_l0, l0 = pcall(function() return t_mot:call("getLayer", 0) end)
-        end
+        local t_mot = pm.target_obj:call("getComponent(System.Type)", sdk.typeof("via.motion.Motion"))
+        local l0 = t_mot and t_mot:call("getLayer", 0)
 
-        if not ok_mot or not t_mot or not ok_l0 or not l0 then
+        if not t_mot or not l0 then
             pm.active = false
             lab.exp_c.playback_status = "PLAYBACK_FAILED"
-            lab.exp_c.last_result = "FAIL: Target via.motion.Motion or Layer 0 became unreadable during monitoring."
+            lab.exp_c.last_result = "FAIL: Target Motion or Layer 0 unreadable during monitoring."
             lab.log_event("EXP_RESULT", "EXP_C_MONITOR_FAIL", lab.exp_c.last_result)
+            lab.restore_experiment_c_state()
             return
         end
 
@@ -1639,23 +1774,22 @@ local function update_lab_telemetry()
         pcall(function()
             pm.current_frame = l0:call("get_Frame") or 0.0
             local mid = l0:call("get_MotionID") or 0
-            
+
             if pm.ticks_observed >= pm.max_ticks then
                 pm.active = false
                 local frame_advanced = (pm.current_frame > pm.start_frame) or (pm.current_frame < pm.start_frame and pm.start_frame > 15.0)
-                
+
                 if mid == pm.target_mid and frame_advanced then
                     lab.exp_c.playback_status = "FRAME_PROGRESSION_VERIFIED"
-                    lab.exp_c.last_result = string.format("FRAME_PROGRESSION_VERIFIED: MotionID %d on Bank %d progressed (%.1f -> %.1f, +%d ticks). Pending visual confirmation in viewport.",
-                        pm.target_mid, pm.target_bid, pm.start_frame, pm.current_frame, pm.ticks_observed)
+                    lab.exp_c.last_result = string.format("FRAME_PROGRESSION_VERIFIED: Motion %d progressed (%.1f -> %.1f, +%d ticks). Pending visual confirmation.",
+                        pm.target_mid, pm.start_frame, pm.current_frame, pm.ticks_observed)
                 elseif mid == pm.target_mid and not frame_advanced then
                     lab.exp_c.playback_status = "PLAYBACK_STALLED"
-                    lab.exp_c.last_result = string.format("PARTIAL: MotionID %d assigned, but frame remained stationary at %.1f (Pause=%s, PlaySpeed=%.2f).",
+                    lab.exp_c.last_result = string.format("PLAYBACK_STALLED: Motion %d assigned, but frame remained stationary at %.1f (Pause=%s, Speed=%.2f).",
                         pm.target_mid, pm.current_frame, tostring(lab.exp_c.claire_layer_pause), lab.exp_c.claire_layer_speed)
                 else
                     lab.exp_c.playback_status = "PLAYBACK_OVERRIDDEN"
-                    lab.exp_c.last_result = string.format("PARTIAL: changeMotion executed, but native motion graph immediately reverted MotionID %d to %d.",
-                        pm.target_mid, mid)
+                    lab.exp_c.last_result = string.format("PLAYBACK_OVERRIDDEN: Native controller immediately reverted Motion %d to %d.", pm.target_mid, mid)
                 end
                 lab.log_event("EXP_RESULT", "EXP_C_MONITOR_FINISH", lab.exp_c.last_result)
             end
@@ -1669,10 +1803,10 @@ end
 
 local function draw_lab_ui()
     imgui.text_colored("=== RE2 DUO MODE — ANIMATION RESEARCH LAB ===", 0.3, 0.9, 1.0, 1.0)
-    imgui.text_colored("Milestone 1: In-Engine Reverse Engineering (Rigorous Edition v1.5.0)", 0.7, 0.7, 0.7, 1.0)
+    imgui.text_colored("Milestone 1: Rigorous Safety Edition (v1.5.1-m1-safety)", 0.7, 0.7, 0.7, 1.0)
     imgui.separator()
 
-    -- Quick Companion Control Bridge (character_renderer.lua bridge)
+    -- Quick Companion Control Bridge
     local duo = _G.duo_spawner or spawner
     local claire_body = (duo and duo.spawned_entities and #duo.spawned_entities > 0 and duo.spawned_entities[1])
     local claire_valid = false
@@ -1690,9 +1824,7 @@ local function draw_lab_ui()
         imgui.text_colored("Claire Companion: NOT SPAWNED", 1.0, 0.6, 0.2, 1.0)
         imgui.same_line()
         if imgui.button(">>> SPAWN CLAIRE IN FRONT OF LEON <<<##btn_bridge_spawn") then
-            if duo and duo.start_spawn then
-                duo.start_spawn("full")
-            end
+            if duo and duo.start_spawn then duo.start_spawn("full") end
         end
     end
     imgui.separator()
@@ -1700,7 +1832,7 @@ local function draw_lab_ui()
     -- Navigation Tabs
     if imgui.button(lab.selected_tab == 1 and "[ Overview ]" or "Overview") then lab.selected_tab = 1 end
     imgui.same_line()
-    if imgui.button(lab.selected_tab == 2 and "[ Exp A: Native NPC ]" or "Exp A: Native NPC") then lab.selected_tab = 2 end
+    if imgui.button(lab.selected_tab == 2 and "[ Exp A: Native Cast ]" or "Exp A: Native Cast") then lab.selected_tab = 2 end
     imgui.same_line()
     if imgui.button(lab.selected_tab == 3 and "[ Exp B: Duplication ]" or "Exp B: Duplication") then lab.selected_tab = 3 end
     imgui.same_line()
@@ -1712,20 +1844,20 @@ local function draw_lab_ui()
 
     -- TAB 1: OVERVIEW
     if lab.selected_tab == 1 then
-        imgui.text_colored("Research Roadmap Status & Strict Acceptance Criteria:", 1.0, 0.8, 0.2, 1.0)
-        imgui.text("Goal: Identify a proven, animated Claire pathway before story scripting.")
+        imgui.text_colored("Roadmap Status & Strict Verification Criteria (v1.5.1):", 1.0, 0.8, 0.2, 1.0)
+        imgui.text("Objective: Establish empirical proof for animated companion pathways without guessing.")
         imgui.spacing()
 
         -- Exp A Summary
         local col_a = (lab.exp_a.status == "PASS" and {0.2, 1.0, 0.4}) or (lab.exp_a.status == "PARTIAL" and {1.0, 0.8, 0.2}) or {0.8, 0.8, 0.8}
-        imgui.text_colored("Experiment A: Native NPC Allocation (SurvivorAssignManager)", col_a[1], col_a[2], col_a[3], 1.0)
+        imgui.text_colored("Experiment A: Native Survivor Casting (SurvivorAssignManager)", col_a[1], col_a[2], col_a[3], 1.0)
         imgui.text("  Status: " .. lab.exp_a.status)
         imgui.text("  Result: " .. lab.exp_a.last_result)
         imgui.spacing()
 
         -- Exp B Summary
         local col_b = (lab.exp_b.status == "PASS" and {0.2, 1.0, 0.4}) or (lab.exp_b.status == "PARTIAL" and {1.0, 0.8, 0.2}) or {0.8, 0.8, 0.8}
-        imgui.text_colored("Experiment B: Character Duplication & Control Test", col_b[1], col_b[2], col_b[3], 1.0)
+        imgui.text_colored("Experiment B: Character & Inert Prop Duplication", col_b[1], col_b[2], col_b[3], 1.0)
         imgui.text("  Status: " .. lab.exp_b.status .. " | Control Test: " .. lab.exp_b.control_test_status)
         imgui.text("  Result: " .. lab.exp_b.last_result)
         imgui.spacing()
@@ -1734,48 +1866,71 @@ local function draw_lab_ui()
         local col_c = (lab.exp_c.playback_status == "PLAYBACK_AND_VISUAL_VERIFIED" and {0.2, 1.0, 0.4}) 
                    or (lab.exp_c.playback_status == "FRAME_PROGRESSION_VERIFIED" and {0.2, 0.9, 1.0}) 
                    or (lab.exp_c.playback_status == "PLAYBACK_STALLED" and {1.0, 0.8, 0.2}) or {0.8, 0.8, 0.8}
-        imgui.text_colored("Experiment C: Direct Motion Playback & Component Audit", col_c[1], col_c[2], col_c[3], 1.0)
+        imgui.text_colored("Experiment C: Direct Motion Playback & Unpausing", col_c[1], col_c[2], col_c[3], 1.0)
         imgui.text("  Inspection: " .. lab.exp_c.inspection_status .. " | Playback: " .. lab.exp_c.playback_status)
         imgui.text("  Result: " .. lab.exp_c.last_result)
 
     -- TAB 2: EXPERIMENT A
     elseif lab.selected_tab == 2 then
-        imgui.text_colored("Experiment A: Native Survivor Casting (Deep Reverse Engineering)", 1.0, 0.8, 0.2, 1.0)
-        imgui.text("Probes Capcom's internal SurvivorAssignManager, standby overloads, CastingOrders & PL1000.")
+        imgui.text_colored("Experiment A: Native Survivor Casting (Safe Modular Execution)", 1.0, 0.8, 0.2, 1.0)
+        imgui.text("Passive reflection is separated from state mutation. Scene diffing prevents false PASS.")
         imgui.spacing()
 
-        if imgui.button("Run Experiment A Probe (Reverse Engineering & PL1000 Retry)##btn_exp_a") then
-            lab.run_experiment_a()
+        if imgui.button("Step 1: Run Passive Reflection Probe (SAFE)##btn_exp_a_ref") then
+            lab.run_experiment_a_reflect()
+        end
+        imgui.spacing()
+        imgui.separator()
+
+        imgui.text_colored("Step 2: Configure Controlled Casting Invocation:", 1.0, 0.8, 0.2, 1.0)
+        -- PlayerType selector
+        imgui.text("Select PlayerType: ")
+        imgui.same_line()
+        if imgui.button(lab.exp_a.selected_player_type == 1000 and "[ PL1000: Claire ]" or "PL1000: Claire") then lab.exp_a.selected_player_type = 1000 end
+        imgui.same_line()
+        if imgui.button(lab.exp_a.selected_player_type == 0 and "[ PL0000: Leon ]" or "PL0000: Leon") then lab.exp_a.selected_player_type = 0 end
+        imgui.same_line()
+        if imgui.button(lab.exp_a.selected_player_type == 2000 and "[ PL2000: Ada ]" or "PL2000: Ada") then lab.exp_a.selected_player_type = 2000 end
+
+        -- CastingReason selector
+        imgui.text("Select CastingReason: ")
+        imgui.same_line()
+        if imgui.button(lab.exp_a.selected_reason == 1 and "[ InitialSet (1) ]" or "InitialSet (1)") then lab.exp_a.selected_reason = 1 end
+        imgui.same_line()
+        if imgui.button(lab.exp_a.selected_reason == 8 and "[ Debug (8) ]" or "Debug (8)") then lab.exp_a.selected_reason = 8 end
+        imgui.same_line()
+        if imgui.button(lab.exp_a.selected_reason == 0 and "[ None (0) ]" or "None (0)") then lab.exp_a.selected_reason = 0 end
+
+        -- Execution button
+        if imgui.button("Execute Single Controlled Standby Call##btn_exp_a_cast") then
+            lab.run_experiment_a_cast()
         end
         imgui.same_line()
-        if imgui.button("Clean Up Native Cast Actor##btn_exp_a_clean") then
+        if imgui.button("Trigger applyCastingRequest() [Optional]##btn_exp_a_apply") then
+            lab.run_experiment_a_apply()
+        end
+        imgui.same_line()
+        if imgui.button("Clean Up Cast Actor##btn_exp_a_clean") then
             lab.cleanup_experiment_a()
         end
 
         imgui.spacing()
+        imgui.separator()
         imgui.text("Status: " .. lab.exp_a.status)
         imgui.text("Singleton Detected: " .. tostring(lab.exp_a.singleton_found))
-        imgui.text("Standby PL1000 Retry Result: " .. tostring(lab.exp_a.standby_1000_result))
-        imgui.text("Actor Verified Valid: " .. tostring(lab.exp_a.actor_valid))
-        imgui.text("Has via.motion.Motion: " .. tostring(lab.exp_a.has_motion))
-        imgui.text("Has MotionFsm2: " .. tostring(lab.exp_a.has_motion_fsm2))
-        imgui.text("Has SurvivorMotionController: " .. tostring(lab.exp_a.has_survivor_motion))
-        imgui.text(string.format("Motion Active: %s (Layers=%d)", tostring(lab.exp_a.motion_active), lab.exp_a.layer_count))
+        imgui.text("Last Standby Call: " .. tostring(lab.exp_a.last_standby_call))
+        imgui.text("Last Standby Result: " .. tostring(lab.exp_a.last_standby_ret) .. " (0=Accepted, 1=Refused)")
+        imgui.text("Apply Casting Result: " .. tostring(lab.exp_a.apply_casting_result))
+        imgui.text("Newly Created Actor: " .. tostring(lab.exp_a.created_actor) .. " (Valid=" .. tostring(lab.exp_a.actor_valid) .. ")")
         imgui.text("Verdict: " .. lab.exp_a.last_result)
-
-        imgui.spacing()
-        imgui.text_colored("Standby Overloads Discovered (" .. #lab.exp_a.standby_overloads .. "):", 0.6, 0.9, 0.6, 1.0)
-        for _, sig in ipairs(lab.exp_a.standby_overloads) do
-            imgui.text("  " .. sig)
-        end
 
     -- TAB 3: EXPERIMENT B
     elseif lab.selected_tab == 3 then
-        imgui.text_colored("Experiment B: Character & Control Duplication Probe", 1.0, 0.8, 0.2, 1.0)
-        imgui.text("Tests via.Scene.duplicateGameObject on control non-player objects vs player actor.")
+        imgui.text_colored("Experiment B: Character & Inert Prop Duplication", 1.0, 0.8, 0.2, 1.0)
+        imgui.text("Tests via.Scene.duplicateGameObject on inert static props and player actor with sequential cleanup.")
         imgui.spacing()
 
-        if imgui.button("1. Run Control Test (Non-Player Duplication)##btn_exp_b_control") then
+        if imgui.button("1. Run Control Test (Inert Static Prop)##btn_exp_b_control") then
             lab.run_experiment_b_control()
         end
         imgui.same_line()
@@ -1783,72 +1938,70 @@ local function draw_lab_ui()
             lab.run_experiment_b()
         end
         imgui.same_line()
-        if imgui.button("Destroy Test Clone##btn_exp_b_destroy") then
+        if imgui.button("Destroy Test Clone (Sequential Cleanup)##btn_exp_b_destroy") then
             lab.cleanup_experiment_b()
         end
 
         imgui.spacing()
-        imgui.text("Status: " .. lab.exp_b.status)
-        imgui.text("Control Test Target: " .. tostring(lab.exp_b.control_target_name))
+        imgui.separator()
+        imgui.text("Control Target: " .. tostring(lab.exp_b.control_target_name) .. " (" .. tostring(lab.exp_b.control_target_ptr) .. ")")
         imgui.text("Control Test Status: " .. tostring(lab.exp_b.control_test_status))
+        imgui.text("Control Cleanup Status: " .. tostring(lab.exp_b.control_cleanup_status))
         imgui.text("Control Test Verdict: " .. tostring(lab.exp_b.control_test_verdict))
         imgui.separator()
         imgui.text("Player Clone Active: " .. tostring(lab.exp_b.clone_entity ~= nil))
         imgui.text("Input Verified Disabled: " .. tostring(lab.exp_b.input_verified_disabled))
-        imgui.text("Independent Transform Control (60 Frames): " .. tostring(lab.exp_b.independent_transform_control))
-        imgui.text("Transform Test Verdict: " .. tostring(lab.exp_b.loco_test.verdict))
+        imgui.text("Independent Transform Control: " .. tostring(lab.exp_b.independent_transform_control))
         imgui.text("Motion Blend Tree Ticking: " .. tostring(lab.exp_b.motion_ticking))
-        imgui.text("Cleanup Status: " .. tostring(lab.exp_b.cleanup_status))
+        imgui.text("Player Clone Cleanup Status: " .. tostring(lab.exp_b.cleanup_status))
         imgui.text("Verdict: " .. lab.exp_b.last_result)
 
     -- TAB 4: EXPERIMENT C
     elseif lab.selected_tab == 4 then
         imgui.text_colored("Experiment C: Claire Animation Playback & Stalled Frame Investigation", 1.0, 0.8, 0.2, 1.0)
-        imgui.text("Investigates why prefab motion stalled at frame 0.0: pause states, frame stepping & speed.")
+        imgui.text("Strict 3-tier evaluation: Frame-Step Acceptance -> Frame Progression -> Viewport Visual Confirmation.")
         imgui.spacing()
 
-        if imgui.button("1. Inspect Target & Animation Reflection##btn_exp_c_insp") then
+        if imgui.button("1. Inspect Target & Original Animation Settings##btn_exp_c_insp") then
             lab.run_experiment_c_inspect()
+        end
+        imgui.same_line()
+        if imgui.button("Restore Original Animation Settings##btn_exp_c_restore") then
+            lab.restore_experiment_c_state()
         end
 
         imgui.spacing()
         imgui.text("Inspection Status: " .. lab.exp_c.inspection_status)
         imgui.text("Target Selected: " .. tostring(lab.exp_c.target_name))
-        imgui.text("Target Native Bank Present: " .. tostring(lab.exp_c.claire_native_bank ~= nil))
+        imgui.text("Native Bank Present: " .. tostring(lab.exp_c.claire_native_bank ~= nil))
         imgui.text(string.format("Motion Pause: %s | Layer 0 Pause: %s", tostring(lab.exp_c.claire_motion_pause), tostring(lab.exp_c.claire_layer_pause)))
         imgui.text(string.format("Play Speed: %.2f | Layer Speed: %.2f | Weight: %.2f", lab.exp_c.claire_play_speed, lab.exp_c.claire_layer_speed, lab.exp_c.claire_layer_weight))
-        imgui.text("Frame-Step Probe: " .. tostring(lab.exp_c.claire_frame_step_result))
 
         imgui.separator()
-        local cur_target_obj, cur_target_name = get_playback_target()
-        lab.exp_c.target_name = cur_target_name
-
-        imgui.text_colored("Controlled Playback Testing (Target: " .. tostring(lab.exp_c.target_name) .. "):", 1.0, 0.8, 0.2, 1.0)
-        if string.find(tostring(lab.exp_c.target_name), "Leon") then
-            imgui.text_colored("[!] CAUTION: Targeting Leon (Player Actor). Input will immediately revert this animation. Use 'SPAWN CLAIRE' above!", 1.0, 0.4, 0.2, 1.0)
-        elseif string.find(tostring(lab.exp_c.target_name), "Claire") then
-            imgui.text_colored("[OK] Targeting Claire Companion. Her animation plays independently of player movement.", 0.2, 1.0, 0.4, 1.0)
+        imgui.text_colored("Tier 1: Frame-Step Acceptance Probe:", 1.0, 0.8, 0.2, 1.0)
+        if imgui.button("Run Frame-Step Probe (Test set_Frame 12.5 & Auto-Restore)##btn_framestep") then
+            lab.run_experiment_c_framestep()
         end
-        
+        imgui.same_line()
+        imgui.text("Probe Result: " .. tostring(lab.exp_c.claire_frame_step_result))
+
+        imgui.separator()
+        imgui.text_colored("Tier 2: Controlled Playback Testing:", 1.0, 0.8, 0.2, 1.0)
+
+        -- Explicit Cross-Bank Assignment Checkbox (Prevents silent substitution)
+        local cb_changed, cb_val = imgui.checkbox("Allow Cross-Bank Assignment (Link Leon's MotionBankAsset to Claire if native bank is nil)##chk_cross_bank", lab.exp_c.allow_cross_bank_assignment)
+        if cb_changed then lab.exp_c.allow_cross_bank_assignment = cb_val end
+
         if lab.exp_c.leon_active_mid > 0 then
             local active_btn_label = string.format("Play Active Leon Motion (ID %d, Bank %d)##btn_play_active", lab.exp_c.leon_active_mid, lab.exp_c.leon_active_bid)
-            if imgui.button(active_btn_label) then
-                lab.run_experiment_c_playback(lab.exp_c.leon_active_mid, lab.exp_c.leon_active_bid)
-            end
+            if imgui.button(active_btn_label) then lab.run_experiment_c_playback(lab.exp_c.leon_active_mid, lab.exp_c.leon_active_bid) end
         end
 
-        imgui.text("Provisional Locomotion Candidates:")
-        if imgui.button("Play Stance / Idle (ID 160)##btn_play_160") then
-            lab.run_experiment_c_playback(160, 1)
-        end
+        if imgui.button("Play Stance / Idle (ID 160)##btn_play_160") then lab.run_experiment_c_playback(160, 1) end
         imgui.same_line()
-        if imgui.button("Play Walk Forward (ID 161)##btn_play_161") then
-            lab.run_experiment_c_playback(161, 1)
-        end
+        if imgui.button("Play Walk Forward (ID 161)##btn_play_161") then lab.run_experiment_c_playback(161, 1) end
         imgui.same_line()
-        if imgui.button("Play Jog / Run (ID 162)##btn_play_162") then
-            lab.run_experiment_c_playback(162, 1)
-        end
+        if imgui.button("Play Jog / Run (ID 162)##btn_play_162") then lab.run_experiment_c_playback(162, 1) end
 
         imgui.spacing()
         imgui.text("Playback Status: " .. lab.exp_c.playback_status)
@@ -1859,27 +2012,25 @@ local function draw_lab_ui()
         end
         imgui.text("Verdict: " .. lab.exp_c.last_result)
 
-        if lab.exp_c.playback_status == "FRAME_PROGRESSION_VERIFIED" or lab.exp_c.playback_status == "PLAYBACK_AND_VISUAL_VERIFIED" then
-            imgui.spacing()
-            local v_changed, v_val = imgui.checkbox("Visual Animation Playback Confirmed in Viewport##chk_visual", lab.exp_c.visual_confirmed)
-            if v_changed then
-                lab.exp_c.visual_confirmed = v_val
-                if v_val then
-                    lab.exp_c.playback_status = "PLAYBACK_AND_VISUAL_VERIFIED"
-                    lab.exp_c.last_result = string.format("PASS: PLAYBACK_AND_VISUAL_VERIFIED (Logical frame progression verified and confirmed visually on character)")
-                else
-                    lab.exp_c.playback_status = "FRAME_PROGRESSION_VERIFIED"
-                end
-                lab.log_event("VISUAL_CONFIRM", "VIEWPORT_CONFIRMATION", tostring(v_val))
+        -- Tier 3: Visual Viewport Confirmation
+        imgui.separator()
+        imgui.text_colored("Tier 3: Viewport Visual Confirmation:", 1.0, 0.8, 0.2, 1.0)
+        local v_changed, v_val = imgui.checkbox("Visual Animation Confirmed in Viewport (Mesh/Bones Deforming)##chk_visual", lab.exp_c.visual_confirmed)
+        if v_changed then
+            lab.exp_c.visual_confirmed = v_val
+            if v_val and lab.exp_c.playback_status == "FRAME_PROGRESSION_VERIFIED" then
+                lab.exp_c.playback_status = "PLAYBACK_AND_VISUAL_VERIFIED"
+                lab.exp_c.last_result = "PASS: PLAYBACK_AND_VISUAL_VERIFIED (Logical frame progression verified and confirmed visually on character)"
+            elseif not v_val and lab.exp_c.playback_status == "PLAYBACK_AND_VISUAL_VERIFIED" then
+                lab.exp_c.playback_status = "FRAME_PROGRESSION_VERIFIED"
             end
+            lab.log_event("VISUAL_CONFIRM", "VIEWPORT_CONFIRMATION", tostring(v_val))
         end
 
     -- TAB 5: LOGS
     elseif lab.selected_tab == 5 then
         imgui.text_colored("Live Research Log (reframework/data/duo_mode/animation_lab_log.txt):", 0.7, 0.7, 0.7, 1.0)
-        if imgui.button("Clear Buffer") then
-            lab.log_buffer = {}
-        end
+        if imgui.button("Clear Buffer") then lab.log_buffer = {} end
         imgui.separator()
         for i = #lab.log_buffer, math.max(1, #lab.log_buffer - 30), -1 do
             imgui.text(lab.log_buffer[i])
@@ -1919,4 +2070,5 @@ end)
 re.on_script_reset(function()
     pcall(lab.cleanup_experiment_b)
     pcall(lab.cleanup_experiment_a)
+    pcall(lab.restore_experiment_c_state)
 end)
