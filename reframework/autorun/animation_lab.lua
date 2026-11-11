@@ -1,31 +1,33 @@
 --[[
     Resident Evil 2: Duo Mode
-    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Safety Edition v1.5.1)
+    Milestone 1 — Animation Research Lab & Test Harness (Rigorous Safety Edition v1.5.2)
     File: reframework/autorun/animation_lab.lua
     Author: AryanTechie-007
 
     Purpose:
     Isolated in-engine reverse-engineering laboratory to establish a verified,
     animated Claire companion pathway while maintaining the playable M0 baseline:
-      - Experiment A: Native Survivor Casting (Passive reflection separated from controlled invocation;
-                      pre/post scene state diffing; strict exclusion of existing Claire companion)
-      - Experiment B: GameObject Duplication (Harmless inert static prop control target; established identity
-                      and verified cleanup route first; strictly single-route sequential destruction)
-      - Experiment C: Claire Animation Playback & Stalled Frame Investigation (Full snapshot and restoration
-                      of original Motion/Layer settings; capability reflection before setter invocation;
-                      no silent bank substitution; distinct 3-tier verification)
+      - Experiment A: Native Survivor Casting (Overload selection by exact parameter types; genuine scene
+                      enumeration; automatic downgrade to UNVERIFIED if scene diffing is partial/unsupported;
+                      strict exclusion of existing Claire companion)
+      - Experiment B: GameObject Duplication (Positive identification of inert static mesh props with via.render.Mesh;
+                      strict get_Valid() == false confirmation for cleanup; single-route sequential destruction)
+      - Experiment C: Claire Animation Playback (Full snapshot and verified restoration of original MotionBankAsset
+                      including nil; restoration on normal 45-frame completion, failure and exceptions; capability
+                      audit including bank assignment methods; distinct 3-tier verification)
+      - Telemetry: Schema-versioned CSV logging (animation_lab_session_v152.csv) with header validation before append.
 
-    Strict Verification Rules (v1.5.1):
+    Strict Verification Rules (v1.5.2):
       - Rule 1: No imaginary functionality. Distinguish confirmed observations from hypotheses.
-      - Rule 2: Passive reflection completely separated from state-mutating casting invocations.
-      - Rule 3: Single confirmed destruction route at a time; verify get_Valid()==false before claiming success.
-      - Rule 4: No silent bank substitutions. Cross-bank assignment requires explicit user permission.
-      - Rule 5: Schema-versioned CSV logging (animation_lab_session_v151.csv) with guaranteed identical column count.
+      - Rule 2: Overloads matched by exact parameter types (PlayerType vs NpcType), not parameter count alone.
+      - Rule 3: Single confirmed destruction route at a time; pcall + get_Valid() == false confirmation.
+      - Rule 4: No silent bank substitutions. Full restoration verified on normal monitor completion.
+      - Rule 5: Schema-versioned CSV logging with header validation.
       - Rule 6: Complete isolation from character_renderer.lua and M0 playable baseline.
 ]]
 
 local lab = {
-    version = "1.5.1-m1-safety",
+    version = "1.5.2-m1-safety",
     window_open = false,
     selected_tab = 1,
     log_buffer = {},
@@ -33,11 +35,12 @@ local lab = {
 
     -- Experiment A State: Native Survivor Casting
     exp_a = {
-        status = "NOT_RUN", -- NOT_RUN | REFLECTION_COMPLETE | CASTING_TESTED | PASS | PARTIAL | REFUSED | FAILED | CLEANED_UP
+        status = "NOT_RUN", -- NOT_RUN | REFLECTION_COMPLETE | CASTING_TESTED | PASS | PARTIAL | REFUSED | UNVERIFIED | FAILED | CLEANED_UP
         singleton_found = false,
         types_resolved = {},
         casting_methods = {},
         standby_overloads = {},
+        selected_overload_sig = "None",
         order_types_resolved = {},
         order_constructors = {},
         exec_casting_request = nil,
@@ -48,6 +51,7 @@ local lab = {
         last_standby_call = "None",
         last_standby_ret = "NOT_TESTED",
         apply_casting_result = "NOT_TESTED",
+        scene_enumeration_mode = "NONE", -- FULL_ENUMERATION | PARTIAL_NAME_SCAN | UNSUPPORTED
         pre_cast_actor_count = 0,
         created_actor = nil,
         actor_valid = false,
@@ -64,7 +68,7 @@ local lab = {
         status = "NOT_RUN", -- NOT_RUN | RUNNING | PASS | PARTIAL | FAILED | CLEANED_UP | CLEANUP_FAILED
         control_target_name = "None",
         control_target_ptr = "None",
-        control_target_components = {},
+        control_target_has_mesh = false,
         control_test_status = "NOT_RUN", -- NOT_RUN | RUNNING | SUCCESS | FAILED | SKIPPED
         control_test_verdict = "Not tested yet.",
         control_cleanup_status = "NOT_RUN",
@@ -118,7 +122,8 @@ local lab = {
         selected_bid = 1,
         allow_cross_bank_assignment = false, -- EXPLICIT: User must check box to allow substituting Leon's bank
         original_settings = nil,             -- Full snapshot before any mutation
-        setter_capabilities = {},            -- Verified reflection flags for setters
+        restoration_status = "NOT_PERFORMED",
+        setter_capabilities = {},            -- Verified reflection flags for setters & bank methods
         discovered_motions = {},
         motion_reflection_methods = {},
         layer_reflection_methods = {},
@@ -136,8 +141,9 @@ local lab = {
     }
 }
 
--- Forward declaration of verdict updater
+-- Forward declarations
 local update_exp_b_verdict
+local verify_object_destroyed
 
 -- =========================================================================
 -- Diagnostic Logger & Ring Buffer
@@ -300,12 +306,27 @@ local function get_playback_target()
     return nil, "None"
 end
 
+-- Strict get_Valid() confirmation helper (fixes false-positive cleanup claim)
+verify_object_destroyed = function(obj)
+    if not obj then return true, "Object reference is nil" end
+    local ok, valid = pcall(function() return obj:call("get_Valid") end)
+    if ok and valid == false then
+        return true, "get_Valid returned exactly false"
+    elseif ok and valid == true then
+        return false, "get_Valid returned true (object still alive)"
+    elseif not ok then
+        return false, "get_Valid threw exception: " .. tostring(valid)
+    else
+        return false, "get_Valid returned non-boolean: " .. tostring(valid)
+    end
+end
+
 -- =========================================================================
--- STRUCTURED & VERSIONED SESSION LOGGER (v1.5.1 Schema - 48 Fixed Columns)
+-- STRUCTURED & VERSIONED SESSION LOGGER (v1.5.2 Schema - 48 Fixed Columns)
 -- =========================================================================
 
 local session_logger = {
-    path = "reframework/data/duo_mode/animation_lab_session_v151.csv",
+    path = "reframework/data/duo_mode/animation_lab_session_v152.csv",
     frame = 0,
     interval = 30, -- One snapshot every 30 REFramework frames (~2 Hz at 60 FPS)
     ready = false,
@@ -368,7 +389,7 @@ local function csv_value(value)
     return '"' .. s .. '"'
 end
 
--- Strictly formats a row map into a verified 48-column CSV string
+-- Formats a row map into a verified 48-column CSV string
 local function format_csv_row(row_map)
     local cells = {}
     for i, col_name in ipairs(schema_columns) do
@@ -404,21 +425,50 @@ local function logger_validity(obj)
     return "UNKNOWN"
 end
 
-local function logger_init()
-    if session_logger.ready then return end
-
+-- Validates existing CSV header before appending; rotates if schema mismatch
+local function validate_or_init_csv()
     local existing = io.open(session_logger.path, "r")
+    local needs_fresh_header = true
+
     if existing then
+        local first_line = existing:read("*l")
         existing:close()
-    else
-        -- Write canonical header
+
+        if first_line then
+            -- Count commas outside quotes
+            local count = 1
+            for _ in string.gmatch(first_line, ",") do
+                count = count + 1
+            end
+            local has_record_type = string.find(first_line, "record_type", 1, true) ~= nil
+            local has_event_details = string.find(first_line, "event_details", 1, true) ~= nil
+
+            if count == #schema_columns and has_record_type and has_event_details then
+                needs_fresh_header = false
+                lab_log("[Logger] Existing CSV header verified valid (48 columns). Appending session records.")
+            else
+                lab_log(string.format("[Logger] CSV header mismatch (cols=%d, expected=%d). Rotating corrupt file.", count, #schema_columns))
+                local rot_name = session_logger.path .. ".mismatch_" .. os.date("%Y%m%d_%H%M%S") .. ".bak"
+                os.rename(session_logger.path, rot_name)
+                needs_fresh_header = true
+            end
+        end
+    end
+
+    if needs_fresh_header then
         local header_cells = {}
         for i, col in ipairs(schema_columns) do
             header_cells[i] = csv_value(col)
         end
         logger_write_line(table.concat(header_cells, ",") .. "\n")
+        lab_log("[Logger] Fresh 48-column canonical header written to " .. session_logger.path)
     end
+end
 
+local function logger_init()
+    if session_logger.ready then return end
+
+    validate_or_init_csv()
     session_logger.ready = true
 
     local init_row = {
@@ -433,7 +483,6 @@ local function logger_init()
         event_details = lab.version
     }
     logger_write_line(format_csv_row(init_row))
-    lab_log("[Logger] Structured CSV session & event logging initialized (Schema v1.5.1, 48 columns).")
 end
 
 -- Event-level telemetry logger with strict 48-column mapping
@@ -607,12 +656,79 @@ local function logger_update()
 end
 
 -- =========================================================================
--- EXPERIMENT A: Native Survivor Casting (Separated Reflection & Controlled Calls)
+-- EXPERIMENT A: Native Survivor Casting (Exact Overload & Strict Scene Diffing)
 -- =========================================================================
 
--- Passive Reflection Probe: DOES NOT INVOKE CASTING OR APPLY
+-- Helper to match standby overloads by EXACT parameter types
+local function find_standby_overload_by_param(sam_td, expected_first_param_substring)
+    if not sam_td then return nil, "<no type definition>" end
+    local methods = sam_td:get_methods() or {}
+    for _, m in ipairs(methods) do
+        if m:get_name() == "standby" then
+            local ptypes = m:get_param_types() or {}
+            if #ptypes == 3 then
+                local p1_name = ptypes[1] and ptypes[1]:get_name() or ""
+                local p2_name = ptypes[2] and ptypes[2]:get_name() or ""
+                local p3_name = ptypes[3] and ptypes[3]:get_name() or ""
+                if string.find(p1_name, expected_first_param_substring, 1, true)
+                   and string.find(p2_name, "CastingReason", 1, true)
+                   and string.find(p3_name, "OfferMode", 1, true) then
+                    return m, format_method_sig(m)
+                end
+            end
+        end
+    end
+    return nil, "<no matching overload>"
+end
+
+-- Helper to attempt genuine scene GameObject enumeration
+local function enumerate_scene_game_objects(scene)
+    if not scene then return nil, "No scene available" end
+    local list = {}
+    local ok = false
+
+    -- Method 1: get_GameObjects() managed array
+    pcall(function()
+        local arr = scene:call("get_GameObjects")
+        if arr then
+            local count = nil
+            pcall(function() count = arr:call("get_Length") or arr:call("get_Count") or arr:get_size() or #arr end)
+            if count and count > 0 then
+                for i = 0, count - 1 do
+                    local go = nil
+                    pcall(function() go = arr[i] or arr:call("get_Item", i) or arr:get_element(i) end)
+                    if go then table.insert(list, go) end
+                end
+                if #list > 0 then ok = true end
+            end
+        end
+    end)
+
+    -- Method 2: getGameObjectCount() + getGameObject(i)
+    if not ok then
+        pcall(function()
+            local cnt = scene:call("getGameObjectCount") or scene:call("get_GameObjectCount") or 0
+            if cnt and cnt > 0 then
+                for i = 0, cnt - 1 do
+                    local go = nil
+                    pcall(function() go = scene:call("getGameObject", i) end)
+                    if go then table.insert(list, go) end
+                end
+                if #list > 0 then ok = true end
+            end
+        end)
+    end
+
+    if ok then
+        return list, "FULL_ENUMERATION"
+    else
+        return nil, "UNSUPPORTED"
+    end
+end
+
+-- Step 1: Passive Reflection Probe (SAFE - NO STANDBY INVOCATIONS)
 function lab.run_experiment_a_reflect()
-    lab.log_event("EXP_START", "EXP_A_REFLECT", "Starting Native Survivor Casting Passive Reflection Probe")
+    lab.log_event("EXP_START", "EXP_A_REFLECT", "Starting Native Survivor Casting Passive Reflection Probe v1.5.2")
     lab.exp_a.status = "RUNNING"
     lab.exp_a.types_resolved = {}
     lab.exp_a.casting_methods = {}
@@ -659,14 +775,18 @@ function lab.run_experiment_a_reflect()
         end
     end
 
-    -- 3. Investigate CastingOrder Types (Constructors & Fields)
+    -- Match exact PlayerType overload
+    local ptype_method, ptype_sig = find_standby_overload_by_param(td_sam, "PlayerType")
+    lab.exp_a.selected_overload_sig = ptype_sig
+    lab.log_event("OVERLOAD_VERIFY", "EXACT_PLAYER_TYPE_OVERLOAD", ptype_sig)
+
+    -- 3. Investigate CastingOrder Types
     local order_type_names = {
         "app.ropeway.SurvivorAssignManager.CastingOrder",
         "app.ropeway.SurvivorAssignManager.CastingOrderNpc",
         "app.ropeway.SurvivorAssignManager.CastingOrderActor",
         "app.ropeway.SurvivorAssignManager.CastingOrderPlayer",
     }
-
     for _, otname in ipairs(order_type_names) do
         local otd = sdk.find_type_definition(otname)
         lab.exp_a.order_types_resolved[otname] = (otd ~= nil)
@@ -695,17 +815,6 @@ function lab.run_experiment_a_reflect()
 
     lab.log_event("SINGLETON_FOUND", "SurvivorAssignManager", tostring(sam))
 
-    local req_tx_now = nil
-    local curr_phase = nil
-    local stack_req = nil
-    pcall(function()
-        req_tx_now = sam:get_field("RequestTransactionNow")
-        curr_phase = sam:get_field("CurrentPhase")
-        stack_req = sam:get_field("StackRequest")
-    end)
-    lab.log_event("SAM_STATE_INSPECT", "SurvivorAssignManager",
-        string.format("RequestTransactionNow=%s, CurrentPhase=%s, StackRequest=%s", tostring(req_tx_now), tostring(curr_phase), tostring(stack_req)))
-
     -- 5. Deep Inspection of SurvivorManager & get_ExecCastingRequest()
     local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
     local exec_req = nil
@@ -715,8 +824,6 @@ function lab.run_experiment_a_reflect()
         pcall(function() in_c_before = sm:call("inCasting") end)
         pcall(function() exec_req = sm:call("get_ExecCastingRequest") end)
         lab.exp_a.exec_casting_request = exec_req
-        lab.log_event("SM_STATE_INSPECT", "SurvivorManager",
-            string.format("inCasting=%s, get_ExecCastingRequest=%s", tostring(in_c_before), tostring(exec_req)))
 
         if exec_req then
             local req_td = exec_req:get_type_definition()
@@ -735,11 +842,11 @@ function lab.run_experiment_a_reflect()
     end
 
     lab.exp_a.status = "REFLECTION_COMPLETE"
-    lab.exp_a.last_result = string.format("REFLECTION_COMPLETE: Singleton active. Standby overloads: %d. Ready for explicit casting test.", #lab.exp_a.standby_overloads)
+    lab.exp_a.last_result = string.format("REFLECTION_COMPLETE: Singleton active. Verified PlayerType overload: %s. Ready for controlled test.", lab.exp_a.selected_overload_sig)
     lab.log_event("EXP_END", "EXP_A_REFLECT", lab.exp_a.last_result)
 end
 
--- Controlled Standby Invocation: Executes EXACTLY ONE call with pre/post scene diffing
+-- Step 2: Controlled Standby Invocation (Exact Overload & Rigorous Diffing)
 function lab.run_experiment_a_cast()
     local sam = sdk.get_managed_singleton("app.ropeway.SurvivorAssignManager")
     if not sam then
@@ -750,28 +857,37 @@ function lab.run_experiment_a_cast()
     end
 
     local td_sam = sam:get_type_definition()
-    local target_standby = nil
-    if td_sam then
-        for _, m in ipairs(td_sam:get_methods() or {}) do
-            if m:get_name() == "standby" then
-                local ptypes = m:get_param_types() or {}
-                if #ptypes == 3 then
-                    target_standby = m
-                    break
-                end
-            end
-        end
-    end
+    local target_standby, sig_matched = find_standby_overload_by_param(td_sam, "PlayerType")
 
     if not target_standby then
         lab.exp_a.status = "FAILED"
-        lab.exp_a.last_result = "FAIL: standby(PlayerType, CastingReason, OfferMode) method definition not located."
+        lab.exp_a.last_result = "FAIL: Exact standby(PlayerType, CastingReason, OfferMode) overload not found."
         lab.log_event("EXP_RESULT", "EXP_A_CAST_FAIL", lab.exp_a.last_result)
         return
     end
 
-    -- 1. Snapshot ALL pre-existing pointers to guarantee we NEVER mistake existing objects for newly cast actors
+    lab.exp_a.selected_overload_sig = sig_matched
+    lab.log_event("OVERLOAD_SELECTED", "STANDBY_TARGET", sig_matched)
+
+    local player = get_active_player()
+    local player_go = get_player_go(player)
+    local cur_scene = get_current_scene(player_go)
+
+    -- 1. Attempt genuine scene enumeration
+    local pre_scene_objs, enum_mode = enumerate_scene_game_objects(cur_scene)
+    lab.exp_a.scene_enumeration_mode = enum_mode
+    lab.log_event("SCENE_ENUM_STATUS", "PRE_CAST", string.format("Mode: %s, Objects: %s", enum_mode, pre_scene_objs and #pre_scene_objs or "nil"))
+
     local pre_existing_pointers = {}
+
+    -- Record enumerated pointers if full enumeration is available
+    if pre_scene_objs then
+        for _, go in ipairs(pre_scene_objs) do
+            pre_existing_pointers[tostring(go)] = true
+        end
+    end
+
+    -- Always record companion spawner entities to strictly forbid false positives
     local duo = _G.duo_spawner or spawner
     if duo and duo.spawned_entities then
         for _, e in ipairs(duo.spawned_entities) do
@@ -779,6 +895,7 @@ function lab.run_experiment_a_cast()
         end
     end
 
+    -- Also record fallback name search targets
     local go_td = sdk.find_type_definition("via.GameObject")
     local find_m = go_td and go_td:get_method("find(System.String)")
     if find_m then
@@ -788,42 +905,55 @@ function lab.run_experiment_a_cast()
         end
     end
 
-    -- 2. Execute the single, user-configured call
+    -- 2. Execute EXACTLY ONE call with verified parameters
     local ptype = lab.exp_a.selected_player_type
     local reason = lab.exp_a.selected_reason
     local mode = lab.exp_a.selected_mode
 
-    lab.exp_a.last_standby_call = string.format("standby(%d, %d, %d)", ptype, reason, mode)
+    lab.exp_a.last_standby_call = string.format("standby(%d, %d, %d) via [%s]", ptype, reason, mode, sig_matched)
     lab.log_event("API_CALL", "STANDBY_INVOKE", lab.exp_a.last_standby_call)
 
     local ok, ret = pcall(function() return target_standby:call(sam, ptype, reason, mode) end)
     lab.exp_a.last_standby_ret = tostring(ret)
     lab.log_event("API_RESULT", "STANDBY_RETURN", string.format("ok=%s, ret=%s (0=Accepted, 1=Refused)", tostring(ok), tostring(ret)))
 
-    -- 3. Check State Transitions
-    local req_tx_after = nil
-    pcall(function() req_tx_after = sam:get_field("RequestTransactionNow") end)
-
-    -- 4. Scene Diffing: Scan for genuinely newly created actor
+    -- 3. Scene Diffing Evaluation
     local newly_created_actor = nil
-    if find_m then
-        for _, name in ipairs({"pl1000", "pl1000_body", "survivor", "Claire"}) do
-            local found = find_m:call(nil, name)
-            if found then
-                local ptr_str = tostring(found)
-                -- STRICT: Categorically ignore if it existed prior to the call or belongs to companion spawner
-                if not pre_existing_pointers[ptr_str] and not is_companion_object(found) then
-                    newly_created_actor = found
+    local actor_discovery_mode = "NONE"
+
+    -- Path A: Genuine scene diffing if full enumeration was available
+    if enum_mode == "FULL_ENUMERATION" and cur_scene then
+        local post_scene_objs = enumerate_scene_game_objects(cur_scene)
+        if post_scene_objs then
+            for _, go in ipairs(post_scene_objs) do
+                local ptr_str = tostring(go)
+                if not pre_existing_pointers[ptr_str] and not is_companion_object(go) then
+                    newly_created_actor = go
+                    actor_discovery_mode = "FULL_SCENE_DIFF"
                     break
                 end
             end
         end
     end
 
+    -- Path B: Fallback name scan (if full enumeration unsupported)
+    if not newly_created_actor and find_m then
+        for _, name in ipairs({"pl1000", "pl1000_body", "survivor", "Claire"}) do
+            local found = find_m:call(nil, name)
+            if found then
+                local ptr_str = tostring(found)
+                if not pre_existing_pointers[ptr_str] and not is_companion_object(found) then
+                    newly_created_actor = found
+                    actor_discovery_mode = "NAME_SCAN_FALLBACK"
+                    break
+                end
+            end
+        end
+    end
+
+    -- 4. Evaluate Verdict based on discovery mode and controller verification
     if newly_created_actor then
         lab.exp_a.created_actor = newly_created_actor
-        lab.log_event("ACTOR_DISCOVERY", "GENUINE_NEW_ACTOR_FOUND", "Found genuinely new actor at " .. tostring(newly_created_actor))
-
         local actor_v = false
         pcall(function() actor_v = (newly_created_actor:call("get_Valid") == true) end)
         lab.exp_a.actor_valid = actor_v
@@ -841,9 +971,7 @@ function lab.run_experiment_a_cast()
                 l_count = c_mot:call("getLayerCount") or 0
                 local is_p = c_mot:call("get_Play")
                 local spd = c_mot:call("get_PlaySpeed") or 0.0
-                if l_count > 0 and is_p == true and spd > 0 then
-                    m_active = true
-                end
+                if l_count > 0 and is_p == true and spd > 0 then m_active = true end
             end
             has_f2 = (newly_created_actor:call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2")) ~= nil)
             has_sm = (newly_created_actor:call("getComponent(System.Type)", sdk.typeof("app.ropeway.survivor.SurvivorMotionController")) ~= nil)
@@ -855,18 +983,21 @@ function lab.run_experiment_a_cast()
         lab.exp_a.motion_active = m_active
         lab.exp_a.layer_count = l_count
 
-        if actor_v and has_m and (has_f2 or has_sm) and m_active then
+        if actor_discovery_mode == "FULL_SCENE_DIFF" and actor_v and has_m and (has_f2 or has_sm) and m_active then
             lab.exp_a.status = "PASS"
-            lab.exp_a.last_result = string.format("PASS: Native actor created and verified via scene diff (Valid=true, Layers=%d)!", l_count)
+            lab.exp_a.last_result = string.format("PASS: Full scene diff confirmed newly cast actor (%s) with active motion (Layers=%d)!", tostring(newly_created_actor), l_count)
+        elseif actor_discovery_mode == "NAME_SCAN_FALLBACK" then
+            -- STRICT: Downgrade to UNVERIFIED when full scene enumeration is unavailable
+            lab.exp_a.status = "UNVERIFIED"
+            lab.exp_a.last_result = string.format("UNVERIFIED: Candidate actor found via name search (%s), but full scene enumeration is unavailable. Cannot mathematically prove actor was newly instantiated.", tostring(newly_created_actor))
         else
             lab.exp_a.status = "PARTIAL"
-            lab.exp_a.last_result = string.format("PARTIAL: New actor spawned (%s), but active ticking unconfirmed.", tostring(newly_created_actor))
+            lab.exp_a.last_result = string.format("PARTIAL: Actor observed (%s), but active ticking unconfirmed.", tostring(newly_created_actor))
         end
     else
-        -- No newly created actor in current frame
         if ret == 0 then
             lab.exp_a.status = "PARTIAL"
-            lab.exp_a.last_result = string.format("PARTIAL: standby returned Accepted (0) [RequestTx=%s], but no new actor instantiated in current frame.", tostring(req_tx_after))
+            lab.exp_a.last_result = string.format("PARTIAL: standby returned Accepted (0), but no new actor instantiated in current frame (EnumMode=%s).", enum_mode)
         elseif ret == 1 then
             lab.exp_a.status = "REFUSED"
             lab.exp_a.last_result = string.format("REFUSED: standby returned Refused (1) for PlayerType=%d, Reason=%d, Mode=%d.", ptype, reason, mode)
@@ -879,7 +1010,7 @@ function lab.run_experiment_a_cast()
     lab.log_event("EXP_END", "EXP_A_CAST", lab.exp_a.last_result)
 end
 
--- Explicit Trigger for SurvivorManager:applyCastingRequest()
+-- Step 3: Explicit Trigger for SurvivorManager:applyCastingRequest()
 function lab.run_experiment_a_apply()
     local sm = sdk.get_managed_singleton("app.ropeway.SurvivorManager")
     if not sm then
@@ -904,7 +1035,7 @@ function lab.run_experiment_a_apply()
     lab.log_event("API_RESULT", "APPLY_CASTING_RESULT", lab.exp_a.apply_casting_result)
 end
 
--- Safe Verified Cleanup for Experiment A
+-- Step 4: Strict Sequential Cleanup for Cast Actor
 function lab.cleanup_experiment_a()
     lab.log_event("CLEANUP_START", "EXP_A_CLEANUP", "Initiating verified cleanup for cast actor")
     local actor = lab.exp_a.created_actor
@@ -918,17 +1049,16 @@ function lab.cleanup_experiment_a()
     local cur_scene = get_current_scene(player_go)
 
     -- Route 1: Scene-level destruction
-    local is_v1 = true
     if cur_scene then
         pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", actor) end)
-        pcall(function() is_v1 = (actor:call("get_Valid") == true) end)
     end
 
-    if not is_v1 then
+    local destroyed_r1, reason_r1 = verify_object_destroyed(actor)
+    if destroyed_r1 then
         lab.exp_a.created_actor = nil
         lab.exp_a.actor_valid = false
         lab.exp_a.status = "CLEANED_UP"
-        lab.log_event("CLEANUP_SUCCESS", "EXP_A_CLEANUP", "Cast actor destroyed via Route 1 (verified get_Valid==false).")
+        lab.log_event("CLEANUP_SUCCESS", "EXP_A_CLEANUP", "Cast actor destroyed via Route 1 (confirmed get_Valid==false).")
         return
     end
 
@@ -939,60 +1069,60 @@ function lab.cleanup_experiment_a()
         pcall(function() destroy_static:call(nil, actor) end)
     end
 
-    local is_v2 = true
-    pcall(function() is_v2 = (actor:call("get_Valid") == true) end)
-
-    if not is_v2 then
+    local destroyed_r2, reason_r2 = verify_object_destroyed(actor)
+    if destroyed_r2 then
         lab.exp_a.created_actor = nil
         lab.exp_a.actor_valid = false
         lab.exp_a.status = "CLEANED_UP"
-        lab.log_event("CLEANUP_SUCCESS", "EXP_A_CLEANUP", "Cast actor destroyed via Route 2 fallback (verified get_Valid==false).")
+        lab.log_event("CLEANUP_SUCCESS", "EXP_A_CLEANUP", "Cast actor destroyed via Route 2 fallback (confirmed get_Valid==false).")
     else
-        lab.log_event("CLEANUP_FAILED", "EXP_A_CLEANUP", "Cast actor could not be invalidated (still get_Valid==true).")
+        lab.log_event("CLEANUP_FAILED", "EXP_A_CLEANUP", string.format("Cast actor cleanup failed: Route1=%s, Route2=%s", reason_r1, reason_r2))
     end
 end
 
 -- =========================================================================
--- EXPERIMENT B: Character & Control Duplication (Inert Prop Target & Sequential Cleanup)
+-- EXPERIMENT B: Character & Control Duplication (Inert Prop Mesh & Strict Cleanup)
 -- =========================================================================
 
--- Helper to check if a GameObject is an inert static prop (harmless non-player target)
-local function is_inert_prop(obj, player_go)
+-- Helper to verify positive identification of an inert static mesh prop
+local function is_inert_mesh_prop(obj, player_go)
     if not obj or obj == player_go or is_companion_object(obj) then return false end
 
     local is_v = false
     pcall(function() is_v = (obj:call("get_Valid") == true) end)
     if not is_v then return false end
 
-    -- Check forbidden components that make an object sensitive
-    local forbidden_types = {
-        "via.camera.Camera",
-        "via.render.Light",
-        "app.ropeway.PlayerManager",
-        "app.ropeway.PlayerInputReceiver",
-        "app.ropeway.PadManager",
-        "app.ropeway.survivor.SurvivorMotionController",
-        "via.motion.MotionFsm2",
-        "via.gui.GUI"
-    }
+    -- Requirement 1: MUST have via.render.Mesh (positive identification of static geometry)
+    local has_mesh = false
+    pcall(function() has_mesh = (obj:call("getComponent(System.Type)", sdk.typeof("via.render.Mesh")) ~= nil) end)
+    if not has_mesh then return false end
 
+    -- Requirement 2: MUST have via.Transform
+    local has_tf = false
+    pcall(function() has_tf = (obj:call("getComponent(System.Type)", sdk.typeof("via.Transform")) ~= nil) end)
+    if not has_tf then return false end
+
+    -- Requirement 3: MUST NOT have sensitive components
+    local forbidden_types = {
+        "via.camera.Camera", "via.render.Light", "app.ropeway.PlayerManager",
+        "app.ropeway.PlayerInputReceiver", "app.ropeway.PadManager",
+        "app.ropeway.survivor.SurvivorMotionController", "via.motion.MotionFsm2",
+        "via.motion.Motion", "via.gui.GUI"
+    }
     for _, ft in ipairs(forbidden_types) do
         local ok, c = pcall(function() return obj:call("getComponent(System.Type)", sdk.typeof(ft)) end)
         if ok and c then return false end
     end
 
-    -- Must have at least a Transform
-    local has_tf = false
-    pcall(function() has_tf = (obj:call("getComponent(System.Type)", sdk.typeof("via.Transform")) ~= nil) end)
-    return has_tf
+    return true
 end
 
--- Finds a genuinely expendable non-player object in the active scene
-local function find_inert_control_target(player_go)
+-- Finds a genuinely expendable non-player static mesh prop in active scene
+local function find_inert_mesh_prop_target(player_go)
     local candidate_names = {
         "sm00_000", "sm00_001", "sm00_002", "sm00_005", "sm00_010",
-        "sm01_000", "sm02_000", "sm03_000",
-        "StaticMesh", "Environment", "prop_desk", "prop_chair", "prop_door"
+        "sm01_000", "sm02_000", "sm03_000", "StaticMesh", "Environment",
+        "prop_desk", "prop_chair", "prop_door", "sm_table", "sm_box"
     }
 
     local go_td = sdk.find_type_definition("via.GameObject")
@@ -1002,7 +1132,7 @@ local function find_inert_control_target(player_go)
         for _, name in ipairs(candidate_names) do
             local obj = nil
             pcall(function() obj = find_m:call(nil, name) end)
-            if obj and is_inert_prop(obj, player_go) then
+            if obj and is_inert_mesh_prop(obj, player_go) then
                 return obj, name
             end
         end
@@ -1011,9 +1141,9 @@ local function find_inert_control_target(player_go)
     return nil, "None"
 end
 
--- Control Test on verified inert prop with single-route sequential cleanup
+-- Control Test on verified inert mesh prop with strict sequential cleanup
 function lab.run_experiment_b_control()
-    lab.log_event("EXP_START", "EXP_B_CONTROL", "Starting Control Duplication Test on Inert Prop")
+    lab.log_event("EXP_START", "EXP_B_CONTROL", "Starting Control Duplication Test on Inert Mesh Prop")
     lab.exp_b.control_test_status = "RUNNING"
     lab.exp_b.control_cleanup_status = "NOT_RUN"
 
@@ -1028,20 +1158,21 @@ function lab.run_experiment_b_control()
         return
     end
 
-    -- 1. Locate harmless inert non-player object (NOT Claire, NOT Camera, NOT Player)
-    local control_target, target_name = find_inert_control_target(player_go)
+    -- 1. Locate positively identified inert static mesh prop (NOT Claire, NOT Camera, NOT Player)
+    local control_target, target_name = find_inert_mesh_prop_target(player_go)
     if not control_target then
         lab.exp_b.control_test_status = "SKIPPED"
-        lab.exp_b.control_test_verdict = "SKIPPED: No verified inert static prop found in active scene chunk."
+        lab.exp_b.control_test_verdict = "SKIPPED: No verified inert static mesh prop found in active scene chunk."
         lab.log_event("CONTROL_RESULT", "EXP_B_CONTROL_SKIPPED", lab.exp_b.control_test_verdict)
         return
     end
 
     lab.exp_b.control_target_name = target_name
     lab.exp_b.control_target_ptr = tostring(control_target)
-    lab.log_event("CONTROL_TARGET_FOUND", target_name, string.format("Pointer: %s (Verified Inert Static Prop)", tostring(control_target)))
+    lab.exp_b.control_target_has_mesh = true
+    lab.log_event("CONTROL_TARGET_IDENTIFIED", target_name, string.format("Pointer: %s (Verified via.render.Mesh + via.Transform, 0 forbidden components)", tostring(control_target)))
 
-    -- 2. Attempt duplication of inert control target
+    -- 2. Attempt duplication of inert mesh prop
     local control_clone = nil
     pcall(function() control_clone = cur_scene:call("duplicateGameObject(via.GameObject)", control_target) end)
     if not control_clone and cur_folder then
@@ -1053,52 +1184,51 @@ function lab.run_experiment_b_control()
 
     if not control_clone then
         lab.exp_b.control_test_status = "FAILED"
-        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_FAILED: duplicateGameObject returned nil for inert prop '%s'.", target_name)
+        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_FAILED: duplicateGameObject returned nil for inert mesh prop '%s'.", target_name)
         lab.log_event("CONTROL_RESULT", "EXP_B_CONTROL_FAIL", lab.exp_b.control_test_verdict)
         return
     end
 
     local is_v = false
     pcall(function() is_v = (control_clone:call("get_Valid") == true) end)
-    lab.log_event("CONTROL_DUPLICATE_OK", target_name, string.format("Inert clone created: %s (Valid=%s)", tostring(control_clone), tostring(is_v)))
+    lab.log_event("CONTROL_DUPLICATE_OK", target_name, string.format("Inert mesh clone created: %s (Valid=%s)", tostring(control_clone), tostring(is_v)))
 
-    -- 3. Strict Sequential Cleanup (One route at a time; never invoke Route 2 if Route 1 succeeded)
-    local is_valid_after_r1 = true
-    pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", control_clone) end)
-    pcall(function() is_valid_after_r1 = (control_clone:call("get_Valid") == true) end)
+    -- 3. Strict Sequential Cleanup (One route at a time; pcall + get_Valid() == false confirmation)
+    if cur_scene then
+        pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", control_clone) end)
+    end
 
-    if not is_valid_after_r1 then
-        lab.exp_b.control_cleanup_status = "CLEANUP_VERIFIED (Route 1 Scene.destroyGameObject confirmed get_Valid==false)"
+    local destroyed_r1, reason_r1 = verify_object_destroyed(control_clone)
+    if destroyed_r1 then
+        lab.exp_b.control_cleanup_status = "CLEANUP_VERIFIED (Route 1 confirmed get_Valid==false)"
         lab.exp_b.control_test_status = "SUCCESS"
-        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_SUCCESS: Inert prop '%s' duplicated and destroyed cleanly via Route 1.", target_name)
+        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_SUCCESS: Inert mesh prop '%s' duplicated and destroyed cleanly via Route 1.", target_name)
         lab.log_event("CONTROL_CLEANUP", "EXP_B_CONTROL_DESTROY", lab.exp_b.control_cleanup_status)
         return
     end
 
-    -- Route 2 Fallback ONLY IF Route 1 did not invalidate
+    -- Route 2 Fallback ONLY IF Route 1 did not confirm destruction
     local go_td = sdk.find_type_definition("via.GameObject")
     local destroy_static = go_td and go_td:get_method("destroy(via.GameObject)")
     if destroy_static then
         pcall(function() destroy_static:call(nil, control_clone) end)
     end
 
-    local is_valid_after_r2 = true
-    pcall(function() is_valid_after_r2 = (control_clone:call("get_Valid") == true) end)
-
-    if not is_valid_after_r2 then
+    local destroyed_r2, reason_r2 = verify_object_destroyed(control_clone)
+    if destroyed_r2 then
         lab.exp_b.control_cleanup_status = "CLEANUP_VERIFIED (Route 2 static GameObject.destroy confirmed get_Valid==false)"
         lab.exp_b.control_test_status = "SUCCESS"
-        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_SUCCESS: Inert prop '%s' duplicated and destroyed via Route 2 fallback.", target_name)
+        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_SUCCESS: Inert mesh prop '%s' duplicated and destroyed via Route 2 fallback.", target_name)
     else
-        lab.exp_b.control_cleanup_status = "CLEANUP_FAILED (Inert clone still Valid==true)"
+        lab.exp_b.control_cleanup_status = string.format("CLEANUP_FAILED (Route 1: %s; Route 2: %s)", reason_r1, reason_r2)
         lab.exp_b.control_test_status = "FAILED"
-        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_FAILED: Inert prop '%s' duplicated, but cleanup failed.", target_name)
+        lab.exp_b.control_test_verdict = string.format("CONTROL_TEST_FAILED: Inert mesh prop '%s' duplicated, but cleanup failed.", target_name)
     end
     lab.log_event("CONTROL_CLEANUP", "EXP_B_CONTROL_DESTROY", lab.exp_b.control_cleanup_status)
 end
 
 function lab.run_experiment_b()
-    lab.log_event("EXP_START", "EXPERIMENT_B", "Starting Player Duplication Probe v1.5.1")
+    lab.log_event("EXP_START", "EXPERIMENT_B", "Starting Player Duplication Probe v1.5.2")
     lab.exp_b.status = "RUNNING"
     lab.exp_b.scene_duplicate_methods = {}
     lab.exp_b.folder_duplicate_methods = {}
@@ -1240,7 +1370,7 @@ function lab.run_experiment_b()
     update_exp_b_verdict()
 end
 
--- Strictly sequential, verified cleanup of duplicate clone
+-- Strictly sequential cleanup of duplicate clone with exact get_Valid() == false confirmation
 function lab.cleanup_experiment_b()
     lab.log_event("CLEANUP_START", "EXP_B_CLEANUP", "Initiating verified destruction of duplicate clone")
 
@@ -1260,13 +1390,12 @@ function lab.cleanup_experiment_b()
     end)
 
     -- Route 1: Scene destruction
-    local is_v1 = true
     if cur_scene then
         pcall(function() cur_scene:call("destroyGameObject(via.GameObject)", clone) end)
-        pcall(function() is_v1 = (clone:call("get_Valid") == true) end)
     end
 
-    if not is_v1 then
+    local destroyed_r1, reason_r1 = verify_object_destroyed(clone)
+    if destroyed_r1 then
         lab.exp_b.cleanup_status = "CLEANUP_VERIFIED (Route 1 confirmed get_Valid==false)"
         lab.log_event("CLEANUP_SUCCESS", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
         lab.exp_b.clone_entity = nil
@@ -1275,24 +1404,22 @@ function lab.cleanup_experiment_b()
         return
     end
 
-    -- Route 2: Fallback ONLY IF Route 1 did not invalidate
+    -- Route 2: Fallback ONLY IF Route 1 did not confirm destruction
     local go_td = sdk.find_type_definition("via.GameObject")
     local destroy_static = go_td and go_td:get_method("destroy(via.GameObject)")
     if destroy_static then
         pcall(function() destroy_static:call(nil, clone) end)
     end
 
-    local is_v2 = true
-    pcall(function() is_v2 = (clone:call("get_Valid") == true) end)
-
-    if not is_v2 then
+    local destroyed_r2, reason_r2 = verify_object_destroyed(clone)
+    if destroyed_r2 then
         lab.exp_b.cleanup_status = "CLEANUP_VERIFIED (Route 2 fallback confirmed get_Valid==false)"
         lab.log_event("CLEANUP_SUCCESS", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
         lab.exp_b.clone_entity = nil
         lab.exp_b.status = "CLEANED_UP"
         lab.exp_b.last_result = lab.exp_b.cleanup_status
     else
-        lab.exp_b.cleanup_status = "CLEANUP_FAILED (Clone still Valid==true)"
+        lab.exp_b.cleanup_status = string.format("CLEANUP_FAILED (Route 1: %s; Route 2: %s)", reason_r1, reason_r2)
         lab.log_event("CLEANUP_FAILED", "EXP_B_CLEANUP", lab.exp_b.cleanup_status)
         lab.exp_b.status = "CLEANUP_FAILED"
         lab.exp_b.last_result = lab.exp_b.cleanup_status
@@ -1325,12 +1452,14 @@ end
 -- EXPERIMENT C: Claire Animation Playback & Stalled Frame Investigation
 -- =========================================================================
 
--- Helper to audit setter capabilities on Motion and Layer 0 via reflection
+-- Helper to audit setter capabilities on Motion, Layer 0, and Bank assignment via reflection
 local function audit_motion_setter_capabilities(t_mot, l0)
     local caps = {
         mot_set_play = false,
         mot_set_pause = false,
         mot_set_playspeed = false,
+        mot_set_bank = false,
+        mot_setup_bank = false,
         l0_set_play = false,
         l0_set_pause = false,
         l0_set_speed = false,
@@ -1344,6 +1473,8 @@ local function audit_motion_setter_capabilities(t_mot, l0)
             caps.mot_set_play = (td:get_method("set_Play(System.Boolean)") ~= nil or td:get_method("set_Play") ~= nil)
             caps.mot_set_pause = (td:get_method("set_Pause(System.Boolean)") ~= nil or td:get_method("set_Pause") ~= nil)
             caps.mot_set_playspeed = (td:get_method("set_PlaySpeed(System.Single)") ~= nil or td:get_method("set_PlaySpeed") ~= nil)
+            caps.mot_set_bank = (td:get_method("set_MotionBankAsset(via.motion.MotionBankAsset)") ~= nil or td:get_method("set_MotionBankAsset") ~= nil)
+            caps.mot_setup_bank = (td:get_method("setupMotionBank()") ~= nil or td:get_method("setupMotionBank") ~= nil)
         end
     end
 
@@ -1399,19 +1530,35 @@ local function snapshot_original_settings(t_mot, l0)
     return orig
 end
 
--- Safely restores original Motion and Layer 0 settings using only verified methods
+-- Safely restores original Motion, Layer 0 settings, AND MotionBankAsset (including nil) with property verification
 function lab.restore_experiment_c_state()
     local orig = lab.exp_c.original_settings
-    if not orig or not orig.t_mot then return end
+    if not orig or not orig.t_mot then
+        lab.exp_c.restoration_status = "SKIPPED_NO_ORIGINAL_SNAPSHOT"
+        return
+    end
     local caps = lab.exp_c.setter_capabilities or {}
 
-    lab.log_event("STATE_RESTORE", "EXP_C_RESTORE", "Restoring original Motion and Layer 0 settings")
+    lab.log_event("STATE_RESTORE", "EXP_C_RESTORE", "Initiating verified restoration of original Motion/Layer settings and MotionBankAsset")
+
+    -- 1. Restore MotionBankAsset (including originally nil bank)
+    if caps.mot_set_bank then
+        pcall(function() orig.t_mot:call("set_MotionBankAsset", orig.mot_bank) end)
+        if caps.mot_setup_bank then
+            pcall(function() orig.t_mot:call("setupMotionBank") end)
+        end
+    end
+
+    -- 2. Restore Motion component settings
     pcall(function()
         if caps.mot_set_play and orig.mot_play ~= nil then orig.t_mot:call("set_Play", orig.mot_play) end
         if caps.mot_set_pause and orig.mot_pause ~= nil then orig.t_mot:call("set_Pause", orig.mot_pause) end
         if caps.mot_set_playspeed and orig.mot_playspeed ~= nil then orig.t_mot:call("set_PlaySpeed", orig.mot_playspeed) end
+    end)
 
-        if orig.l0 then
+    -- 3. Restore Layer 0 settings
+    if orig.l0 then
+        pcall(function()
             if caps.l0_set_play and orig.l0_play ~= nil then orig.l0:call("set_Play", orig.l0_play) end
             if caps.l0_set_pause and orig.l0_pause ~= nil then orig.l0:call("set_Pause", orig.l0_pause) end
             if caps.l0_set_speed and orig.l0_speed ~= nil then orig.l0:call("set_Speed", orig.l0_speed) end
@@ -1420,14 +1567,66 @@ function lab.restore_experiment_c_state()
             if orig.l0_mid and orig.l0_bid and orig.l0_mid > 0 then
                 pcall(function() orig.l0:call("changeMotion", orig.l0_bid, orig.l0_mid, 0.0) end)
             end
+        end)
+    end
+
+    -- 4. Verify each restored property instead of assuming success
+    local verified_count = 0
+    local total_checked = 0
+    local discrepancies = {}
+
+    pcall(function()
+        -- Verify MotionBankAsset
+        local cur_bank = orig.t_mot:call("get_MotionBankAsset")
+        total_checked = total_checked + 1
+        if cur_bank == orig.mot_bank then
+            verified_count = verified_count + 1
+        else
+            table.insert(discrepancies, string.format("BankAsset (cur=%s, expected=%s)", tostring(cur_bank), tostring(orig.mot_bank)))
+        end
+
+        -- Verify Motion pause
+        local cur_m_pause = orig.t_mot:call("get_Pause")
+        total_checked = total_checked + 1
+        if cur_m_pause == orig.mot_pause then
+            verified_count = verified_count + 1
+        else
+            table.insert(discrepancies, string.format("MotionPause (cur=%s, expected=%s)", tostring(cur_m_pause), tostring(orig.mot_pause)))
+        end
+
+        -- Verify Motion speed
+        local cur_m_speed = orig.t_mot:call("get_PlaySpeed")
+        total_checked = total_checked + 1
+        if cur_m_speed == orig.mot_playspeed then
+            verified_count = verified_count + 1
+        else
+            table.insert(discrepancies, string.format("MotionSpeed (cur=%s, expected=%s)", tostring(cur_m_speed), tostring(orig.mot_playspeed)))
+        end
+
+        -- Verify Layer 0 pause
+        if orig.l0 then
+            local cur_l_pause = orig.l0:call("get_Pause")
+            total_checked = total_checked + 1
+            if cur_l_pause == orig.l0_pause then
+                verified_count = verified_count + 1
+            else
+                table.insert(discrepancies, string.format("LayerPause (cur=%s, expected=%s)", tostring(cur_l_pause), tostring(orig.l0_pause)))
+            end
         end
     end)
-    lab.log_event("STATE_RESTORE_DONE", "EXP_C_RESTORE", "Original settings restoration completed.")
+
+    if #discrepancies == 0 then
+        lab.exp_c.restoration_status = string.format("RESTORE_VERIFIED (%d/%d properties checked)", verified_count, total_checked)
+    else
+        lab.exp_c.restoration_status = string.format("RESTORE_PARTIAL (%d/%d verified; discrepancies: %s)", verified_count, total_checked, table.concat(discrepancies, "; "))
+    end
+
+    lab.log_event("STATE_RESTORE_VERIFIED", "EXP_C_RESTORE", lab.exp_c.restoration_status)
 end
 
 -- Step 1: Component Audit & Passive Pause/Speed Inspection
 function lab.run_experiment_c_inspect()
-    lab.log_event("EXP_START", "EXPERIMENT_C_INSPECT", "Starting Target & Animation Component Audit v1.5.1")
+    lab.log_event("EXP_START", "EXPERIMENT_C_INSPECT", "Starting Target & Animation Component Audit v1.5.2")
     lab.exp_c.inspection_status = "RUNNING"
     lab.exp_c.target_components = {}
     lab.exp_c.motion_reflection_methods = {}
@@ -1471,7 +1670,7 @@ function lab.run_experiment_c_inspect()
     local l0 = nil
     pcall(function() l0 = t_mot:call("getLayer", 0) end)
 
-    -- Audit setter capabilities
+    -- Audit setter & bank capabilities
     lab.exp_c.setter_capabilities = audit_motion_setter_capabilities(t_mot, l0)
 
     -- Take initial snapshot of original settings
@@ -1567,7 +1766,7 @@ function lab.run_experiment_c_framestep()
     lab.log_event("PROBE_RESULT", "FRAME_STEP_PROBE", lab.exp_c.claire_frame_step_result)
 end
 
--- Step 3: Tier 2 Controlled Playback Test (Requires explicit bank permission if native bank is nil)
+-- Step 3: Tier 2 Controlled Playback Test (Requires explicit bank permission if native bank is nil; auto-restores on completion)
 function lab.run_experiment_c_playback(target_mid, target_bid)
     lab.log_event("EXP_START", "EXPERIMENT_C_PLAYBACK", string.format("Controlled Playback Test (MotionID: %d, BankID: %d)", target_mid, target_bid))
     lab.exp_c.playback_status = "TESTING"
@@ -1600,7 +1799,9 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
         lab.exp_c.setter_capabilities = audit_motion_setter_capabilities(t_mot, l0)
     end
 
-    -- 1. Check MotionBankAsset: STRICT NO SILENT SUBSTITUTION
+    local caps = lab.exp_c.setter_capabilities or audit_motion_setter_capabilities(t_mot, l0)
+
+    -- 1. Check MotionBankAsset: STRICT NO SILENT SUBSTITUTION & REFLECTED CAPABILITY CHECK
     local cur_asset = t_mot:call("get_MotionBankAsset")
     if not cur_asset then
         -- Claire has no native bank asset
@@ -1619,9 +1820,20 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
             return
         end
 
+        if not caps.mot_set_bank then
+            lab.exp_c.playback_status = "PLAYBACK_FAILED"
+            lab.exp_c.last_result = "FAIL: Motion component lacks set_MotionBankAsset method definition."
+            lab.log_event("EXP_RESULT", "EXP_C_PLAYBACK_FAIL", lab.exp_c.last_result)
+            return
+        end
+
         lab.log_event("API_CALL", "EXPLICIT_CROSS_BANK_SET", "set_MotionBankAsset(LeonBank): " .. tostring(bank_to_assign))
         local ok_set = pcall(function() t_mot:call("set_MotionBankAsset", bank_to_assign) end)
-        local ok_setup = pcall(function() t_mot:call("setupMotionBank") end)
+        local ok_setup = true
+        if caps.mot_setup_bank then
+            ok_setup = pcall(function() t_mot:call("setupMotionBank") end)
+        end
+
         if not ok_set or not ok_setup then
             lab.exp_c.playback_status = "PLAYBACK_FAILED"
             lab.exp_c.last_result = "FAIL: Cross-bank assignment threw exception."
@@ -1631,7 +1843,6 @@ function lab.run_experiment_c_playback(target_mid, target_bid)
     end
 
     -- 2. Explicit Unpausing & Speed Activation using ONLY verified setter capabilities
-    local caps = lab.exp_c.setter_capabilities or {}
     pcall(function()
         if caps.mot_set_play then t_mot:call("set_Play", true) end
         if caps.mot_set_playspeed then t_mot:call("set_PlaySpeed", 1.0) end
@@ -1745,7 +1956,7 @@ local function update_lab_telemetry()
         end
     end
 
-    -- 2. Exp C Playback Frame Progression Monitor
+    -- 2. Exp C Playback Frame Progression Monitor with Guaranteed Automatic Restoration
     local pm = lab.exp_c.playback_monitor
     if pm and pm.active and pm.target_obj then
         local ok_val, is_valid = pcall(function() return pm.target_obj:call("get_Valid") end)
@@ -1792,6 +2003,9 @@ local function update_lab_telemetry()
                     lab.exp_c.last_result = string.format("PLAYBACK_OVERRIDDEN: Native controller immediately reverted Motion %d to %d.", pm.target_mid, mid)
                 end
                 lab.log_event("EXP_RESULT", "EXP_C_MONITOR_FINISH", lab.exp_c.last_result)
+
+                -- GUARANTEED: Automatically restore original settings upon normal 45-frame monitor completion!
+                lab.restore_experiment_c_state()
             end
         end)
     end
@@ -1803,7 +2017,7 @@ end
 
 local function draw_lab_ui()
     imgui.text_colored("=== RE2 DUO MODE — ANIMATION RESEARCH LAB ===", 0.3, 0.9, 1.0, 1.0)
-    imgui.text_colored("Milestone 1: Rigorous Safety Edition (v1.5.1-m1-safety)", 0.7, 0.7, 0.7, 1.0)
+    imgui.text_colored("Milestone 1: Rigorous Safety Edition (v1.5.2-m1-safety)", 0.7, 0.7, 0.7, 1.0)
     imgui.separator()
 
     -- Quick Companion Control Bridge
@@ -1844,20 +2058,20 @@ local function draw_lab_ui()
 
     -- TAB 1: OVERVIEW
     if lab.selected_tab == 1 then
-        imgui.text_colored("Roadmap Status & Strict Verification Criteria (v1.5.1):", 1.0, 0.8, 0.2, 1.0)
+        imgui.text_colored("Roadmap Status & Strict Verification Criteria (v1.5.2):", 1.0, 0.8, 0.2, 1.0)
         imgui.text("Objective: Establish empirical proof for animated companion pathways without guessing.")
         imgui.spacing()
 
         -- Exp A Summary
         local col_a = (lab.exp_a.status == "PASS" and {0.2, 1.0, 0.4}) or (lab.exp_a.status == "PARTIAL" and {1.0, 0.8, 0.2}) or {0.8, 0.8, 0.8}
         imgui.text_colored("Experiment A: Native Survivor Casting (SurvivorAssignManager)", col_a[1], col_a[2], col_a[3], 1.0)
-        imgui.text("  Status: " .. lab.exp_a.status)
+        imgui.text("  Status: " .. lab.exp_a.status .. " | Scene Enum: " .. lab.exp_a.scene_enumeration_mode)
         imgui.text("  Result: " .. lab.exp_a.last_result)
         imgui.spacing()
 
         -- Exp B Summary
         local col_b = (lab.exp_b.status == "PASS" and {0.2, 1.0, 0.4}) or (lab.exp_b.status == "PARTIAL" and {1.0, 0.8, 0.2}) or {0.8, 0.8, 0.8}
-        imgui.text_colored("Experiment B: Character & Inert Prop Duplication", col_b[1], col_b[2], col_b[3], 1.0)
+        imgui.text_colored("Experiment B: Character & Inert Mesh Prop Duplication", col_b[1], col_b[2], col_b[3], 1.0)
         imgui.text("  Status: " .. lab.exp_b.status .. " | Control Test: " .. lab.exp_b.control_test_status)
         imgui.text("  Result: " .. lab.exp_b.last_result)
         imgui.spacing()
@@ -1867,13 +2081,13 @@ local function draw_lab_ui()
                    or (lab.exp_c.playback_status == "FRAME_PROGRESSION_VERIFIED" and {0.2, 0.9, 1.0}) 
                    or (lab.exp_c.playback_status == "PLAYBACK_STALLED" and {1.0, 0.8, 0.2}) or {0.8, 0.8, 0.8}
         imgui.text_colored("Experiment C: Direct Motion Playback & Unpausing", col_c[1], col_c[2], col_c[3], 1.0)
-        imgui.text("  Inspection: " .. lab.exp_c.inspection_status .. " | Playback: " .. lab.exp_c.playback_status)
+        imgui.text("  Inspection: " .. lab.exp_c.inspection_status .. " | Playback: " .. lab.exp_c.playback_status .. " | Restore: " .. lab.exp_c.restoration_status)
         imgui.text("  Result: " .. lab.exp_c.last_result)
 
     -- TAB 2: EXPERIMENT A
     elseif lab.selected_tab == 2 then
         imgui.text_colored("Experiment A: Native Survivor Casting (Safe Modular Execution)", 1.0, 0.8, 0.2, 1.0)
-        imgui.text("Passive reflection is separated from state mutation. Scene diffing prevents false PASS.")
+        imgui.text("Overload selection by exact parameter signature. Scene diffing with UNVERIFIED downgrade.")
         imgui.spacing()
 
         if imgui.button("Step 1: Run Passive Reflection Probe (SAFE)##btn_exp_a_ref") then
@@ -1883,6 +2097,8 @@ local function draw_lab_ui()
         imgui.separator()
 
         imgui.text_colored("Step 2: Configure Controlled Casting Invocation:", 1.0, 0.8, 0.2, 1.0)
+        imgui.text("Matched Overload Signature: " .. tostring(lab.exp_a.selected_overload_sig))
+
         -- PlayerType selector
         imgui.text("Select PlayerType: ")
         imgui.same_line()
@@ -1918,6 +2134,7 @@ local function draw_lab_ui()
         imgui.separator()
         imgui.text("Status: " .. lab.exp_a.status)
         imgui.text("Singleton Detected: " .. tostring(lab.exp_a.singleton_found))
+        imgui.text("Scene Enum Mode: " .. tostring(lab.exp_a.scene_enumeration_mode))
         imgui.text("Last Standby Call: " .. tostring(lab.exp_a.last_standby_call))
         imgui.text("Last Standby Result: " .. tostring(lab.exp_a.last_standby_ret) .. " (0=Accepted, 1=Refused)")
         imgui.text("Apply Casting Result: " .. tostring(lab.exp_a.apply_casting_result))
@@ -1926,11 +2143,11 @@ local function draw_lab_ui()
 
     -- TAB 3: EXPERIMENT B
     elseif lab.selected_tab == 3 then
-        imgui.text_colored("Experiment B: Character & Inert Prop Duplication", 1.0, 0.8, 0.2, 1.0)
-        imgui.text("Tests via.Scene.duplicateGameObject on inert static props and player actor with sequential cleanup.")
+        imgui.text_colored("Experiment B: Character & Inert Mesh Prop Duplication", 1.0, 0.8, 0.2, 1.0)
+        imgui.text("Positive identification of via.render.Mesh. Strict get_Valid()==false confirmation on cleanup.")
         imgui.spacing()
 
-        if imgui.button("1. Run Control Test (Inert Static Prop)##btn_exp_b_control") then
+        if imgui.button("1. Run Control Test (Inert Mesh Prop)##btn_exp_b_control") then
             lab.run_experiment_b_control()
         end
         imgui.same_line()
@@ -1945,6 +2162,7 @@ local function draw_lab_ui()
         imgui.spacing()
         imgui.separator()
         imgui.text("Control Target: " .. tostring(lab.exp_b.control_target_name) .. " (" .. tostring(lab.exp_b.control_target_ptr) .. ")")
+        imgui.text("Control Target Has Mesh: " .. tostring(lab.exp_b.control_target_has_mesh))
         imgui.text("Control Test Status: " .. tostring(lab.exp_b.control_test_status))
         imgui.text("Control Cleanup Status: " .. tostring(lab.exp_b.control_cleanup_status))
         imgui.text("Control Test Verdict: " .. tostring(lab.exp_b.control_test_verdict))
@@ -1959,14 +2177,14 @@ local function draw_lab_ui()
     -- TAB 4: EXPERIMENT C
     elseif lab.selected_tab == 4 then
         imgui.text_colored("Experiment C: Claire Animation Playback & Stalled Frame Investigation", 1.0, 0.8, 0.2, 1.0)
-        imgui.text("Strict 3-tier evaluation: Frame-Step Acceptance -> Frame Progression -> Viewport Visual Confirmation.")
+        imgui.text("Automatic restoration on 45-frame completion. Verifies bank restoration (including nil).")
         imgui.spacing()
 
         if imgui.button("1. Inspect Target & Original Animation Settings##btn_exp_c_insp") then
             lab.run_experiment_c_inspect()
         end
         imgui.same_line()
-        if imgui.button("Restore Original Animation Settings##btn_exp_c_restore") then
+        if imgui.button("Restore Original Animation Settings (Verified)##btn_exp_c_restore") then
             lab.restore_experiment_c_state()
         end
 
@@ -1976,6 +2194,7 @@ local function draw_lab_ui()
         imgui.text("Native Bank Present: " .. tostring(lab.exp_c.claire_native_bank ~= nil))
         imgui.text(string.format("Motion Pause: %s | Layer 0 Pause: %s", tostring(lab.exp_c.claire_motion_pause), tostring(lab.exp_c.claire_layer_pause)))
         imgui.text(string.format("Play Speed: %.2f | Layer Speed: %.2f | Weight: %.2f", lab.exp_c.claire_play_speed, lab.exp_c.claire_layer_speed, lab.exp_c.claire_layer_weight))
+        imgui.text("Restoration Status: " .. tostring(lab.exp_c.restoration_status))
 
         imgui.separator()
         imgui.text_colored("Tier 1: Frame-Step Acceptance Probe:", 1.0, 0.8, 0.2, 1.0)

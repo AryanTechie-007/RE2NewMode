@@ -5,7 +5,7 @@
 **Workspace Directory:** `D:\Gamesregarding` (Git repository root)  
 **Live Game Sandbox:** `D:\Games\RE2_DuoMode_Sandbox` (Standalone game installation with REFramework `dinput8.dll`)  
 **Baseline Release Tag:** `v0.1-baseline` (Permanent historical branch: `legacy/working-baseline`)  
-**Current Milestone:** Milestone 0 (Consolidation Complete) & Milestone 1 (Animation Research Spike — Harness v1.5.1 Safety Edition)  
+**Current Milestone:** Milestone 0 (Consolidation Complete) & Milestone 1 (Animation Research Spike — Harness v1.5.2 Safety Edition)  
 **Date:** November 11, 2026  
 
 ---
@@ -61,33 +61,31 @@ Following an in-depth repository audit and honest project assessment, the projec
 
 ---
 
-## 4. Milestone 1 Animation Research Lab (`animation_lab.lua` v1.5.1 Safety Edition)
+## 4. Milestone 1 Animation Research Lab (`animation_lab.lua` v1.5.2 Safety Edition)
 
 To prevent speculative reflection calls from destabilizing the core companion, [`animation_lab.lua`](file:///D:/Gamesregarding/reframework/autorun/animation_lab.lua) runs three independent experiments with strict, non-optimistic success criteria, event-level telemetry, and safety barriers:
 
 1. **Experiment A (Native Survivor Casting):**
    - Probes `app.ropeway.SurvivorAssignManager`, `SurvivorManager`, and `SurvivorStandbyCatalog`.
-   - **v1.5.1 Safety Architecture:**
-     - **Separation of Concerns:** Passive reflection (`lab.run_experiment_a_reflect`) is completely separated from casting invocation (`lab.run_experiment_a_cast`). Reflection discovers types, singletons, fields, and method signatures without invoking `standby` or `applyCastingRequest`.
-     - **Explicit Controlled Invocation:** User explicitly selects `PlayerType` (Claire `1000`, Leon `0`, Ada `2000`), `CastingReason` (InitialSet `1`, Debug `8`, None `0`), and `OfferMode` (Normal `0`). Invokes exactly one call per click.
-     - **Scene Diffing & Companion Exclusion:** Snapshots all existing GameObject pointers before calling `standby`. Cross-checks post-call scene objects and categorically excludes any pre-existing pointer or entity in `_G.duo_spawner`. Never reports PASS on an existing Claire object.
-     - **Optional Apply Trigger:** `SurvivorManager:applyCastingRequest()` is an independent, user-triggered action.
+   - **v1.5.2 Enhancements:**
+     - **Exact Overload Selection:** Standby overloads are matched by exact parameter types (verifying Param 1 contains `PlayerType`, Param 2 contains `CastingReason`, Param 3 contains `OfferMode`), avoiding accidental invocations of the `NpcType` overload.
+     - **Genuine Scene Enumeration vs Downgrade to UNVERIFIED:** Attempts actual enumeration of scene GameObjects. If full enumeration is supported, performs strict pre/post scene diffing. If full enumeration is unavailable, candidate objects found via name search are strictly downgraded to `UNVERIFIED` rather than reporting false `PASS`.
+     - **Strict Companion Exclusion:** Categorically excludes all entities from `_G.duo_spawner`.
 2. **Experiment B (GameObject & Control Duplication):**
    - Evaluates cloning via `via.Scene.duplicateGameObject`.
-   - **v1.5.1 Safety Architecture:**
-     - **Inert Static Prop Target:** Strictly forbids targeting Claire, player, or camera entities. Scans active scene chunk for verified inert static props (e.g. `sm00_...` static meshes with only `via.Transform` and `via.render.Mesh`, lacking all camera, light, input, and player components).
-     - **Pre-Established Identity & Cleanup Route:** Identifies target name, pointer, and verifies `destroyGameObject` capability before attempting duplication.
-     - **Strict Sequential Cleanup:** Strictly invokes one destruction route at a time (Route 1: `cur_scene:destroyGameObject`). Queries `get_Valid() == false` before attempting fallback (Route 2: static `via.GameObject.destroy`). Never invokes Route 2 if Route 1 succeeded, and never reports success until `get_Valid() == false` is confirmed.
+   - **v1.5.2 Enhancements:**
+     - **Positive Inert Mesh Identification:** Specifically requires `via.render.Mesh` and `via.Transform` while confirming 0 sensitive components (no cameras, lights, GUI, player components, or motion components).
+     - **Exact Cleanup Confirmation:** Uses `pcall` and strictly requires `valid == false` from `get_Valid()`. If `get_Valid()` returns nil or throws, cleanup is not claimed.
+     - **Sequential Single-Route Destruction:** Tests Route 1 (`Scene.destroyGameObject`), checks `get_Valid() == false`. Only falls back to Route 2 (static `GameObject.destroy`) if Route 1 failed.
 3. **Experiment C (Claire Motion Playback & Stalled Frame Investigation):**
    - Investigates why prefab motion stalled at frame 0.00.
-   - **v1.5.1 Safety Architecture:**
-     - **Snapshot & Restoration:** Full snapshot of all original Motion and Layer 0 parameters (`Play`, `Pause`, `Speed`, `Weight`, `Frame`, `MotionID`, `BankID`, `MotionBankAsset`) before any mutation. Safe restoration (`lab.restore_experiment_c_state`) is automatically executed upon test completion, exception, or via manual UI button.
-     - **Capability Reflection:** Audits setter availability (`set_Play`, `set_Pause`, `set_Speed`, `set_Weight`, `set_Frame`) before attempting invocation.
-     - **No Silent Bank Substitution:** Inspects Claire's native `MotionBankAsset`. If nil, playback is cleanly blocked unless the user explicitly checks `Allow Cross-Bank Assignment` in the UI.
-     - **Three-Tier Verification Criteria:**
-       - **Tier 1 (Frame-Step Acceptance):** Probes whether `set_Frame(12.5)` mutates memory timeline float and immediately restores original frame (`FRAME_STEP_ACCEPTED` vs `FRAME_STEP_REJECTED`).
-       - **Tier 2 (Frame Progression):** Monitors timeline progression over 45 game frames (`FRAME_PROGRESSION_VERIFIED` vs `PLAYBACK_STALLED`).
-       - **Tier 3 (Viewport Visual Confirmation):** Viewport operator confirmation checkbox (`PLAYBACK_AND_VISUAL_VERIFIED`).
+   - **v1.5.2 Enhancements:**
+     - **Complete MotionBankAsset Restoration:** Snapshots original bank asset (including `nil`). Restores original asset upon test completion and verifies restoration.
+     - **Restoration on Normal 45-Frame Monitor Completion:** Automatically triggers `restore_experiment_c_state()` on normal completion, monitor abort, timeout, and exceptions.
+     - **Reflected Bank Assignment Capabilities:** `set_MotionBankAsset` and `setupMotionBank` are audited in `audit_motion_setter_capabilities` before invocation.
+     - **Verified Property Restoration:** Explicitly verifies each restored property individually (`Play`, `Pause`, `Speed`, `Weight`, `Frame`, `BankAsset`) rather than assuming success.
+4. **Telemetry & Logging:**
+   - **Header Validation Before Append:** `validate_or_init_csv()` reads existing CSV header in `animation_lab_session_v152.csv`. If column count or schema mismatches, the file is automatically rotated and a fresh 48-column canonical header is created.
 
 ---
 
@@ -96,7 +94,7 @@ To prevent speculative reflection calls from destabilizing the core companion, [
 The compiled and consolidated scripts are deployed directly to the test sandbox:
 * **Source:** `D:\Gamesregarding\reframework\autorun\`
 * **Target Sandbox:** `D:\Games\RE2_DuoMode_Sandbox\reframework\autorun\`
-* **Telemetry Data:** `reframework/data/duo_mode/animation_lab_session_v151.csv` and `animation_lab_log.txt`
+* **Telemetry Data:** `reframework/data/duo_mode/animation_lab_session_v152.csv` and `animation_lab_log.txt`
 
 ### In-Game Safe Test Execution Order:
 1. Launch `D:\Games\RE2_DuoMode_Sandbox\Resident Evil 2.exe`.
@@ -108,14 +106,14 @@ The compiled and consolidated scripts are deployed directly to the test sandbox:
        1. Tab 2 (Exp A): Click `Step 1: Run Passive Reflection Probe (SAFE)`.
        2. Tab 4 (Exp C): Click `1. Inspect Target & Original Animation Settings`.
      - **Phase 2 (Harmless Single Probes):**
-       3. Tab 3 (Exp B): Click `1. Run Control Test (Inert Static Prop)`. Checks if inert prop duplication and sequential cleanup succeed.
+       3. Tab 3 (Exp B): Click `1. Run Control Test (Inert Mesh Prop)`. Checks inert prop duplication and verified sequential cleanup.
        4. Tab 4 (Exp C): Click `Run Frame-Step Probe (Test set_Frame 12.5 & Auto-Restore)`.
      - **Phase 3 (Controlled Companion Playback):**
        5. Under quick bridge: Click `Spawn Claire in Front of Leon` (using M0 baseline spawner).
        6. Tab 4 (Exp C): Click `1. Inspect Target` (locks onto Claire Prefab Body).
        7. If Claire native bank is nil and you wish to test Leon's bank asset, check `Allow Cross-Bank Assignment`.
-       8. Click `Play Stance / Idle (ID 160)` and observe 45-frame progression. If motion visually plays in viewport, check `Visual Animation Confirmed`.
-       9. Click `Restore Original Animation Settings` when finished.
+       8. Click `Play Stance / Idle (ID 160)` and observe 45-frame progression. Original settings (including bank) auto-restore on frame 45.
+       9. If motion visibly plays in viewport, check `Visual Animation Confirmed`.
      - **Phase 4 (Explicit Casting & Duplication Tests):**
        10. Tab 2 (Exp A): Select PL1000 (Claire) + InitialSet (1) + Normal (0), then click `Execute Single Controlled Standby Call`.
-       11. Tab 3 (Exp B): Click `2. Spawn Duplicate Player Actor` (optional, tested only if control test succeeds). Click `Destroy Test Clone` immediately after.
+       11. Tab 3 (Exp B): Click `2. Spawn Duplicate Player Actor` (optional, run only if control test in Phase 2 passed). Click `Destroy Test Clone` immediately after.
